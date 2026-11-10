@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Apply Companion",
+  "description": "Save job applications to your local Apply dashboard during an active tracking session.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "120",
+  "permissions": ["storage", "activeTab", "scripting", "alarms"],
+  "host_permissions": ["http://127.0.0.1:4318/*"],
+  "optional_host_permissions": [
+    "https://boards.greenhouse.io/*",
+    "https://job-boards.greenhouse.io/*",
+    "https://boards.eu.greenhouse.io/*",
+    "https://jobs.lever.co/*",
+    "https://jobs.eu.lever.co/*",
+    "https://jobs.ashbyhq.com/*"
+  ],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "Apply Companion" }
+}
