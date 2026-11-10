@@ -1,9 +1,9 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { ArrowUpRight, CaretDown, Check, CheckCircle, Clock, EnvelopeSimple, FileText, Flag, LinkSimple, MapPin, Monitor, PencilSimple, Plus, ShieldCheck, Trash, WarningCircle, X } from '@phosphor-icons/react';
-import type { Application, Evidence, EvidenceSource, Task } from '../shared/types';
+import { ArrowUpRight, CaretDown, Check, CheckCircle, Clock, DownloadSimple, EnvelopeSimple, FileText, Flag, LinkSimple, MapPin, Monitor, PencilSimple, Plus, ShieldCheck, Trash, WarningCircle, X } from '@phosphor-icons/react';
+import type { Application, ApplicationDocument, Evidence, EvidenceSource, Task } from '../shared/types';
 import { STAGES, STAGE_LABELS } from '../shared/types';
-import { api, safeUrl } from './api';
+import { api, apiBlob, safeUrl } from './api';
 import { CompanyMark, dateLabel, Modal, TaskRow } from './ui';
 import './details.css';
 
@@ -21,6 +21,73 @@ function SourceIcon({ source, size = 17 }: { source: EvidenceSource; size?: numb
 function timestamp(value: string) {
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Date not provided';
+}
+
+function fileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} ${bytes === 1 ? 'byte' : 'bytes'}`;
+  const unit = bytes < 1024 * 1024 ? 'KB' : 'MB';
+  const size = bytes / (unit === 'KB' ? 1024 : 1024 * 1024);
+  return `${size.toLocaleString(undefined, { maximumFractionDigits: size < 10 ? 1 : 0 })} ${unit}`;
+}
+
+const DOCUMENT_STATES: Record<ApplicationDocument['status'], string> = {
+  selected: 'Selected', submitted: 'Detected at submission', replaced: 'Replaced', removed: 'Removed',
+};
+
+function DocumentRecord({ applicationId, document, versions }: {
+  applicationId: string; document: ApplicationDocument; versions: ApplicationDocument[];
+}) {
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
+  const sameName = versions.filter(item => item.name === document.name);
+  const distinctVersions = new Set(sameName.map(item => item.sha256 || item.id));
+  const versionLabel = distinctVersions.size > 1 ? (document.sha256 || document.id).slice(0, 8) : null;
+  async function downloadCopy() {
+    setDownloading(true); setDownloadError('');
+    try {
+      const blob = await apiBlob(`/applications/${encodeURIComponent(applicationId)}/documents/${encodeURIComponent(document.id)}/file`);
+      const url = URL.createObjectURL(blob);
+      const link = window.document.createElement('a');
+      link.href = url; link.download = document.name;
+      window.document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) { setDownloadError(error instanceof Error ? error.message : 'Could not download this file. Try again.'); }
+    finally { setDownloading(false); }
+  }
+  return <article className="record-file" aria-label={document.name}>
+    <FileText className="record-file-icon" size={21} />
+    <div className="record-file-body">
+      <strong className="record-file-name">{document.name}</strong>
+      <div className="record-file-meta"><span>{fileSize(document.size)}</span><span>{DOCUMENT_STATES[document.status]}</span>{versionLabel && <span className="record-file-version">Version {versionLabel}</span>}</div>
+      <div className="record-file-date"><span>Detected <time dateTime={document.detectedAt}>{timestamp(document.detectedAt)}</time></span>{document.submittedAt && <span>At submission <time dateTime={document.submittedAt}>{timestamp(document.submittedAt)}</time></span>}</div>
+      <div className="record-file-actions">{document.stored ? <button className="text-button" disabled={downloading} onClick={() => void downloadCopy()} aria-label={`Download ${document.name}${versionLabel ? `, version ${versionLabel}` : ''}`}><DownloadSimple size={14} />{downloading ? 'Downloading…' : 'Download copy'}</button> : <span>No saved copy</span>}</div>
+      {downloadError && <p className="record-file-error" role="alert">{downloadError}</p>}
+    </div>
+  </article>;
+}
+
+function ApplicationDocuments({ application }: { application: Application }) {
+  const documents = [...(application.documents || [])].sort((left, right) => right.detectedAt.localeCompare(left.detectedAt));
+  const groups = [
+    { kind: 'resume', label: 'Resume', name: application.resumeName, currentId: application.resumeDocumentId },
+    { kind: 'cover_letter', label: 'Cover letter', name: application.coverLetterName, currentId: application.coverLetterDocumentId },
+  ] as const;
+  return <section className="record-section record-documents" aria-label="Documents"><div className="record-section-heading"><h3>Documents</h3></div>
+    <div className="record-document-groups">{groups.map(group => {
+      const versions = documents.filter(document => document.kind === group.kind);
+      const current = versions.find(document => document.id === group.currentId);
+      const visible = current ? [current] : group.currentId === undefined ? versions.filter(document => document.status === 'selected' || document.status === 'submitted') : [];
+      const previous = versions.filter(document => !visible.includes(document));
+      return <div className="record-document-group" key={group.kind}>
+        <h4>{group.label}</h4>
+        {!current && group.name && <div className="record-file record-file-reference"><FileText className="record-file-icon" size={21} /><div className="record-file-body"><strong className="record-file-name">{group.name}</strong><div className="record-file-meta"><span>Filename reference</span><span>No saved copy</span></div></div></div>}
+        {visible.map(document => <DocumentRecord key={document.id} applicationId={application.id} document={document} versions={versions} />)}
+        {!group.name && visible.length === 0 && <p className="record-file-empty">No file detected</p>}
+        {previous.length > 0 && <details className="record-file-history"><summary><span>{previous.length} previous {previous.length === 1 ? 'file' : 'files'}</span><CaretDown size={14} /></summary><div>{previous.map(document => <DocumentRecord key={document.id} applicationId={application.id} document={document} versions={versions} />)}</div></details>}
+      </div>;
+    })}</div>
+    <p className="record-document-help">With browser tracking on, the extension detects files you choose on supported application pages. Detection does not confirm the employer received the file.</p>
+  </section>;
 }
 
 export default function ApplicationDetail({ application, onClose, onChange, onEdit, onDelete, onTaskToggle, onError, onRestoreFocus }: {
@@ -129,7 +196,7 @@ export default function ApplicationDetail({ application, onClose, onChange, onEd
             </section>
             <section className="record-section"><div className="record-section-heading"><h3>Application</h3><button className="text-button" onClick={onEdit}>Edit details<ArrowUpRight size={14} /></button></div><dl className="record-data">{metadata('Email used', application.email, !application.email)}{metadata('Job reference', application.jobId, !application.jobId)}{metadata('Salary', application.salary, !application.salary)}{metadata('Location', application.location, !application.location)}{metadata('Work arrangement', application.workMode, !application.workMode)}</dl></section>
             <section className="record-section"><div className="record-section-heading"><h3>Recruiter</h3></div>{application.recruiterName || application.recruiterEmail ? <dl className="record-data">{metadata('Name', application.recruiterName, !application.recruiterName)}{metadata('Email', safeUrl(`mailto:${application.recruiterEmail}`) && application.recruiterEmail ? <a href={`mailto:${application.recruiterEmail}`}>{application.recruiterEmail}<ArrowUpRight size={13} /></a> : null, !application.recruiterEmail)}</dl> : <p className="record-empty-copy">No recruiter details added.</p>}</section>
-            <section className="record-section"><div className="record-section-heading"><h3>Documents</h3><span className="record-section-note">Filename references</span></div><div className="record-document-list">{[{ label: 'CV', name: application.resumeName }, { label: 'Cover letter', name: application.coverLetterName }].map(item => <div className="record-document" key={item.label}><FileText size={21} /><span>{item.label}</span><strong className={!item.name ? 'record-missing' : undefined}>{item.name || 'Not provided'}</strong></div>)}</div></section>
+            <ApplicationDocuments application={application} />
             <section className="record-section record-notes"><div className="record-section-heading"><h3>Notes</h3><span className={`record-note-status${noteStatus === 'error' ? ' error' : ''}`} role="status">{noteStatus === 'saving' ? 'Saving…' : noteDirty ? noteStatus === 'error' ? 'Could not save' : 'Unsaved changes' : noteStatus === 'saved' ? <><Check size={13} />Saved</> : ''}</span></div><textarea className="notes-input" aria-label="Application notes" value={noteDraft} onChange={event => { setNoteDraft(event.target.value); setNoteDirty(event.target.value !== application.notes); setNoteStatus('idle'); }} placeholder="Preparation notes, questions or anything to remember." rows={4} maxLength={20000} /><div className="record-note-actions"><span>Only visible in your workspace</span><button className="button primary small" disabled={!noteDirty || !!busy} onClick={() => void saveNotes()}>{noteStatus === 'saving' ? 'Saving…' : 'Save notes'}</button></div></section>
             <section className="record-section"><details className="record-description"><summary><span>Saved job description</span><CaretDown size={16} /></summary>{application.description ? <p>{application.description}</p> : <p className="record-empty-copy">No job description saved. Add it in Edit application.</p>}</details></section>
             <footer className="record-footer"><span>Added {dateLabel(application.createdAt, true)}</span><button className="text-button danger-text" onClick={() => setDeleteOpen(true)}><Trash size={15} />Delete application</button></footer>
