@@ -19,7 +19,18 @@ const stageRank: Record<Stage, number> = { saved: 0, in_progress: 1, applied: 2,
 function needsReview(application: Application, input: CaptureEvent): boolean {
   if (input.requiresReview) return true;
   const stage = stageByKind[input.kind];
-  if (!stage || stage === application.stage) return false;
+  if (!stage) return false;
+  if (input.observedAt && !['submission_pending', 'submission_confirmed'].includes(input.kind)) {
+    const observedTime = new Date(input.observedAt).getTime();
+    const previousStageTimes = application.evidence
+      .filter(evidence => evidence.review === 'accepted' && stageByKind[evidence.kind])
+      .map(evidence => new Date(evidence.observedAt).getTime());
+    const manualStageTimes = application.timeline
+      .filter(item => item.source === 'manual' && item.title === 'Stage updated')
+      .map(item => new Date(item.createdAt).getTime());
+    if (observedTime < Math.max(0, ...previousStageTimes, ...manualStageTimes)) return true;
+  }
+  if (stage === application.stage) return false;
   // Outcomes and user withdrawal are not silently overwritten by a contradictory message.
   if (['rejected', 'withdrawn'].includes(application.stage) && !['submission_confirmed', 'submission_pending', 'note'].includes(input.kind)) return true;
   if (application.stage === 'offer' && input.kind === 'rejection') return true;
@@ -69,7 +80,10 @@ function matchApplication(store: Store, input: CaptureEvent): Application {
 export function ingestEvent(store: Store, input: CaptureEvent): { application: Application; evidence: Evidence } {
   return store.transaction(() => {
     const existing = store.findProcessedEvent(input);
-    if (existing) return existing;
+    if (existing) {
+      if (input.applicationId && input.applicationId !== existing.application.id) throw new HttpError(409, 'This evidence is already attached to a different application.');
+      return existing;
+    }
     const application = matchApplication(store, input);
     const now = new Date().toISOString();
     const review = needsReview(application, input) ? 'pending' : 'accepted';

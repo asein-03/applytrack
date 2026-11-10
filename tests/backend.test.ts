@@ -108,6 +108,31 @@ test('conflicting terminal outcomes require review and explicit approval can cor
   });
 });
 
+test('historical outcomes and assessments cannot overwrite newer progress automatically', async () => {
+  await withServer(async api => {
+    await api('/events', body(event({ source: 'email', kind: 'interview', sourceId: 'recent-interview', observedAt: '2026-11-10T12:00:00Z' })));
+    const oldRejection = await (await api('/events', body(event({ source: 'email', kind: 'rejection', sourceId: 'old-rejection', observedAt: '2026-11-01T12:00:00Z' })))).json() as { application: Application; evidence: Evidence };
+    assert.equal(oldRejection.application.stage, 'interviewing');
+    assert.equal(oldRejection.evidence.review, 'pending');
+    const oldAssessment = await (await api('/events', body(event({ source: 'email', kind: 'assessment_requested', sourceId: 'old-assessment', observedAt: '2026-11-02T12:00:00Z', task: { title: 'Old assessment', dueAt: '2026-11-04T12:00:00Z' } })))).json() as typeof oldRejection;
+    assert.equal(oldAssessment.application.tasks.length, 0);
+    assert.equal(oldAssessment.evidence.review, 'pending');
+    const oldConfirmation = await (await api('/events', body(event({ source: 'email', sourceId: 'old-confirmation', observedAt: '2026-10-29T12:00:00Z' })))).json() as typeof oldRejection;
+    assert.equal(oldConfirmation.application.stage, 'interviewing');
+    assert.equal(oldConfirmation.evidence.review, 'accepted');
+  });
+});
+
+test('a repeated source cannot silently attach evidence to a different explicit application', async () => {
+  await withServer(async api => {
+    const first = await (await api('/applications', body(appInput))).json() as Application;
+    const second = await (await api('/applications', body({ ...appInput, role: 'Second role' }))).json() as Application;
+    assert.equal((await api('/events', body(event({ source: 'email', applicationId: first.id })))).status, 201);
+    assert.equal((await api('/events', body(event({ source: 'email', applicationId: second.id })))).status, 409);
+    assert.equal((await (await api(`/applications/${second.id}`)).json()).evidence.length, 0);
+  });
+});
+
 test('ambiguous roles require assignment and distinct job IDs never merge', async () => {
   await withServer(async api => {
     for (const jobId of ['role-a', 'role-b']) await api('/applications', body({ ...appInput, jobId }));

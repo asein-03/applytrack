@@ -28,12 +28,24 @@ export function extractBody(part: GmailPart, depth = 0): string {
   }
   const children = (part.parts ?? []).map(child => extractBody(child, depth + 1)).filter(Boolean).join('\n');
   if (children) return children;
-  if (part.mimeType === 'text/html') return decode(part.body?.data)
+  if (part.mimeType === 'text/html') return removeQuotedHtml(decode(part.body?.data))
     .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
     .replace(/<a\b[^>]*href=["'](https:\/\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, '$2 $1')
     .replace(/<\/(?:p|div|li|br)>|<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
   return '';
+}
+
+function removeQuotedHtml(html: string): string {
+  // Strip inner quotes before outer quotes so old outcomes cannot classify a
+  // new reply. A bounded loop also handles common nested Gmail reply chains.
+  let value = html;
+  for (let depth = 0; depth < 20; depth++) {
+    const next = value.replace(/<blockquote\b[^>]*>(?:(?!<blockquote\b)[\s\S])*?<\/blockquote\s*>/gi, '');
+    if (next === value) break;
+    value = next;
+  }
+  return value;
 }
 
 async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {

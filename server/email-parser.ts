@@ -26,6 +26,11 @@ export function explicitDeadline(text: string): string | null {
 
 export function classifyEmail(mail: IncomingEmail): Pick<CaptureEvent, 'kind' | 'summary' | 'requiresReview' | 'task'> {
   const text = `${mail.subject}\n${newestEmailText(mail.body)}`;
+  // Instructional and hypothetical copy is not a delivered hiring decision.
+  // Ambiguous cases stay reviewable even if a familiar keyword is present.
+  if (/\b(?:if|when|once|after|unless|whether)\b[^.!?\n]{0,80}(?:application.{0,35}(?:received|submitted)|(?:not (?:be )?)?(?:moving|proceeding) forward|offer (?:you|is|will))/i.test(text)) {
+    return { kind: 'note', summary: 'Recruiting email needs review', requiresReview: true };
+  }
   let kind: EventKind = 'note';
   let summary = 'Recruiting email needs review';
   let requiresReview = true;
@@ -52,7 +57,10 @@ export function classifyEmail(mail: IncomingEmail): Pick<CaptureEvent, 'kind' | 
 export function matchEmail(mail: IncomingEmail, applications: Application[]): Application | null {
   const text = normalize(`${mail.subject}\n${newestEmailText(mail.body)}`);
   const eligible = applications.filter(app => app.workspace === mail.workspace && (!mail.recipient || !app.email || app.email.toLowerCase() === mail.recipient.toLowerCase()));
-  const byReference = eligible.filter(app => app.jobId.length >= 4 && contains(text, app.jobId));
+  // Job IDs are often short numbers shared by unrelated employers. Corroborate
+  // the employer instead of attaching mail solely because a number appears.
+  const employerText = normalize(`${mail.from}\n${mail.subject}\n${newestEmailText(mail.body)}`);
+  const byReference = eligible.filter(app => app.jobId.length >= 4 && contains(text, app.jobId) && contains(employerText, app.company));
   if (byReference.length === 1) return byReference[0];
   const matches = eligible.filter(app => contains(text, app.company) && contains(text, app.role));
   return matches.length === 1 ? matches[0] : null;

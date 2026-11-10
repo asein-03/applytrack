@@ -96,6 +96,7 @@ test('MIME alternatives prefer plain text once, HTML is a fallback, attachments 
     { mimeType: 'text/plain', body: { data: encode('Thanks for applying.') } },
     { mimeType: 'text/plain', filename: 'old-email.txt', body: { data: encode('We are not moving forward.') } },
   ] }), 'Thanks for applying.');
+  assert.equal(extractBody({ mimeType: 'text/html', body: { data: encode('Please confirm your availability.<blockquote>We are not moving forward.<blockquote>Earlier history.</blockquote>More quoted history.</blockquote>') } }).trim(), 'Please confirm your availability.');
 });
 
 test('deadline extraction preserves explicit timezones across UTC day boundaries', () => {
