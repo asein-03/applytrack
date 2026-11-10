@@ -8,6 +8,9 @@ import { extensionArchive } from './archive.js';
 const dataDir = resolve(process.env.DATA_DIR ?? 'data');
 const port = Number(process.env.PORT ?? 4318);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('PORT must be between 1024 and 65535.');
+const production = process.argv.includes('--production');
+if (production && !existsSync(resolve('dist/index.html'))) throw new Error('Run npm run build before npm start.');
+if (production && !process.env.APP_ORIGIN) process.env.APP_ORIGIN = `http://127.0.0.1:${port}`;
 const { app, store, close } = createApp();
 const email = attachEmailRoutes(app, store, { dataDir });
 

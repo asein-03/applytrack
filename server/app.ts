@@ -64,6 +64,11 @@ export function createApp(options: { dbPath?: string } = {}) {
   const app = express();
   app.disable('x-powered-by');
   const allowedOrigins = new Set(['http://127.0.0.1:5173', 'http://localhost:5173', 'http://127.0.0.1:4318', 'http://localhost:4318']);
+  const configuredPort = Number(process.env.PORT ?? 4318);
+  if (Number.isInteger(configuredPort) && configuredPort >= 1024 && configuredPort <= 65535) {
+    allowedOrigins.add(`http://127.0.0.1:${configuredPort}`);
+    allowedOrigins.add(`http://localhost:${configuredPort}`);
+  }
   const configuredOrigin = process.env.APP_ORIGIN;
   if (configuredOrigin) {
     try { const parsed = new URL(configuredOrigin); if (['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname) && parsed.protocol === 'http:') allowedOrigins.add(parsed.origin); } catch { /* Invalid configuration is not made trusted. */ }

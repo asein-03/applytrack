@@ -11,9 +11,10 @@
     "dev:api": "tsx watch --env-file-if-exists=.env server/index.ts",
     "dev:web": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
-    "start": "tsx --env-file-if-exists=.env server/index.ts",
+    "start": "tsx --env-file-if-exists=.env server/index.ts --production",
     "test": "tsx --test tests/*.test.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test:browser": "playwright test"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
