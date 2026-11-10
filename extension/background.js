@@ -109,7 +109,12 @@ async function flushCaptures() {
           captureQueue.shift(); captureFailure('An unsaved capture was discarded because its tracking session ended.'); continue;
         }
         if (Date.now() - item.createdAt > 5 * 60 * 1000) { captureQueue.shift(); captureFailure('A capture could not be saved. Re-select the document with the local app connected.'); continue; }
-        await api('/api/events', { method: 'POST', body: JSON.stringify(item.event) });
+        const saved = await api('/api/events', { method: 'POST', body: JSON.stringify(item.event) });
+        // Metadata can commit before object storage. Keep the original copy until
+        // the API confirms the archive, using the same idempotent event on retry.
+        if (saved.archiveError) {
+          const error = new Error(String(saved.archiveError)); error.status = 502; throw error;
+        }
         captureQueue.shift(); delivered.add(item.event.sourceId);
         if (delivered.size > 200) delivered.delete(delivered.values().next().value);
         retryMessage = ''; updateBadge();
