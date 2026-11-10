@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CloudService, WorkspaceRepository, exportWorkspace } from '../server/cloud.js';
-import { Store } from '../server/store.js';
+import { Store, HttpError } from '../server/store.js';
 import { createApp } from '../server/app.js';
 import { cloudFixture, post, MemoryCloudTransport } from './cloud-fixtures.js';
 import type { Application } from '../shared/types.js';
@@ -145,4 +145,33 @@ test('retrying device signout is idempotent while another active account remains
     assert.equal((await f.api('/cloud/session', { method: 'DELETE' }, 'alice')).status, 409);
     assert.equal(f.store.getMeta('activeCloudUser'), f.cloud.actors.get('bob')!.id);
   } finally { await f.close(); }
+});
+
+
+test('same-user token refresh races keep capture retryable, but a different active account stays terminal', async () => {
+  for (const scenario of ['same-user', 'expired-old-token', 'different-user'] as const) {
+    const f = await cloudFixture();
+    let resume!: () => void;
+    const wait = new Promise<void>(resolve => { resume = resolve; });
+    try {
+      await f.cloud.bind('alice');
+      const alice = f.cloud.actors.get('alice')!;
+      f.cloud.runtimeFor(alice).startSession({ browserEnabled: true, screenEnabled: false });
+      const originalVerify = f.cloud.verify.bind(f.cloud);
+      let pauseNext = true;
+      f.cloud.verify = async token => {
+        if (pauseNext) {
+          pauseNext = false;
+          await wait;
+          if (scenario === 'expired-old-token') throw new HttpError(401, 'Old token expired.');
+        }
+        return originalVerify(token);
+      };
+      const pending = assert.rejects(f.cloud.activeActor(), { status: scenario === 'different-user' ? 409 : 503 });
+      await f.cloud.bind(scenario === 'different-user' ? 'bob' : 'alice');
+      resume(); await pending;
+      assert.equal((await f.cloud.activeActor()).id, f.cloud.actors.get(scenario === 'different-user' ? 'bob' : 'alice')!.id);
+      assert.equal(!!f.cloud.runtimeFor(alice).getSession(), scenario !== 'different-user');
+    } finally { resume?.(); await f.close(); }
+  }
 });

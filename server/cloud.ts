@@ -115,6 +115,10 @@ export class CloudService {
     this.refreshInFlight = operation;
     try { return await operation; } finally { if (this.refreshInFlight === operation) this.refreshInFlight = null; }
   }
+  private assertCurrentBinding(id: string, generation: number): void {
+    if (this.runtime.getMeta('activeCloudUser') !== id) throw new HttpError(409, 'The active account changed.');
+    if (generation !== this.bindingGeneration) throw new HttpError(503, 'Your account session was refreshed. Retry this capture.');
+  }
   private async resolveActiveActor(): Promise<CloudActor> {
     const generation = this.bindingGeneration;
     const id = this.runtime.getMeta<string>('activeCloudUser');
@@ -123,16 +127,20 @@ export class CloudService {
     const session = this.vault.decrypt<DeviceSession>(encrypted);
     try {
       const actor = await this.verify(session.accessToken);
-      if (generation !== this.bindingGeneration || actor.id !== id || session.userId !== id || this.runtime.getMeta('activeCloudUser') !== id) throw new HttpError(409, 'The active account changed.');
+      this.assertCurrentBinding(id, generation);
+      if (actor.id !== id || session.userId !== id) throw new HttpError(409, 'The active account changed.');
       return actor;
     }
     catch (error) {
+      this.assertCurrentBinding(id, generation);
       if (!(error instanceof HttpError) || error.status !== 401 || !session.refreshToken) throw error;
       const { data, error: refreshError } = await this.client().auth.refreshSession({ refresh_token: session.refreshToken });
+      this.assertCurrentBinding(id, generation);
       if (refreshError && ![400, 401, 403, 404, 422].includes(refreshError.status ?? 0)) throw new HttpError(503, 'Account refresh is unavailable. Check your connection and retry.');
       if (refreshError || !data.session || data.user?.id !== id) throw new HttpError(401, 'Sign in to Apply again to resume tracking.');
       const actor = await this.verify(data.session.access_token);
-      if (generation !== this.bindingGeneration || actor.id !== id || this.runtime.getMeta('activeCloudUser') !== id) throw new HttpError(409, 'The active account changed.');
+      this.assertCurrentBinding(id, generation);
+      if (actor.id !== id) throw new HttpError(409, 'The active account changed.');
       this.runtime.setMeta(`cloud-session:${id}`, this.vault.encrypt({ userId: id, accessToken: data.session.access_token, refreshToken: data.session.refresh_token } satisfies DeviceSession));
       return actor;
     }
