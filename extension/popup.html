@@ -7,21 +7,28 @@
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <header><span class="mark">A</span><div><h1>Apply</h1><p>Browser companion</p></div></header>
-    <div class="status"><span id="indicator"></span><strong id="status">Checking connection</strong></div>
-    <p id="message" role="status" aria-live="polite">Keep the local Apply app running.</p>
-    <form id="pair-form">
-      <label for="token">Pairing token</label>
-      <input id="token" type="password" autocomplete="off" placeholder="Copy from Connections in Apply" />
-      <button type="submit" class="secondary">Connect extension</button>
-    </form>
-    <div class="actions">
-      <button id="start" type="button">Start browser tracking</button>
-      <button id="stop" type="button" class="secondary" hidden>Stop browser tracking</button>
-      <button id="save" type="button" class="secondary">Save this job</button>
-      <button id="open" type="button" class="text">Open dashboard ↗</button>
-    </div>
-    <p class="footnote">Automatic capture supports Greenhouse, Lever and Ashby. Screen capture is controlled from the dashboard.</p>
+    <header><span class="mark" aria-hidden="true">A</span><div><h1>Apply</h1><p>Browser companion</p></div><span class="local-label">Local</span></header>
+    <main>
+      <section class="tracking-panel" aria-labelledby="status">
+        <div class="status"><span id="indicator" aria-hidden="true"></span><h2 id="status">Checking connection</h2></div>
+        <p id="message" role="status" aria-live="polite">Keep the local Apply app running.</p>
+        <div class="tracking-actions">
+          <button id="start" type="button" disabled>Start browser tracking</button>
+          <button id="stop" type="button" hidden>Stop browser tracking</button>
+          <button id="save" type="button" class="secondary" disabled>Save this job</button>
+        </div>
+        <button id="retry" type="button" class="text" hidden>Check connection</button>
+      </section>
+      <form id="pair-form" hidden>
+        <label for="token">Pairing code</label>
+        <p class="field-help" id="token-help">Copy the code from Connections in your dashboard.</p>
+        <input id="token" type="password" autocomplete="off" spellcheck="false" required minlength="16" maxlength="300" placeholder="Paste pairing code" aria-describedby="token-help" />
+        <div class="pair-actions"><button type="submit" id="pair-submit">Connect extension</button><button type="button" id="pair-cancel" class="text" hidden>Cancel</button></div>
+      </form>
+      <div class="connection-row"><span id="connection-label">Local app</span><button id="change-pairing" type="button" class="text" hidden>Change pairing</button></div>
+      <button id="open" type="button" class="dashboard-link"><span>Open dashboard</span><span aria-hidden="true">↗</span></button>
+    </main>
+    <footer><p>Greenhouse <span>·</span> Lever <span>·</span> Ashby</p><p>Screen capture is controlled from the dashboard.</p></footer>
     <script src="popup.js" type="module"></script>
   </body>
 </html>
