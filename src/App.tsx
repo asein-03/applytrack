@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, ArrowUpRight, Briefcase, CalendarBlank, CaretRight, Check, CheckCircle, DownloadSimple, EnvelopeSimple, Flag, LinkSimple, MagnifyingGlass, Monitor, Plus, Record, ShieldCheck, SquaresFour, Stop, WarningCircle, X } from '@phosphor-icons/react';
+import { ArrowRight, ArrowUpRight, Briefcase, CaretRight, Check, CheckCircle, DownloadSimple, EnvelopeSimple, Flag, LinkSimple, MagnifyingGlass, Monitor, Plus, Record, ShieldCheck, SquaresFour, Stop, WarningCircle, X } from '@phosphor-icons/react';
 import type { Application, Settings, Task, TrackingSession, Workspace } from '../shared/types';
 import { STAGES, STAGE_LABELS } from '../shared/types';
 import { api } from './api';
@@ -233,19 +233,14 @@ export default function App() {
 
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">Skip to main content</a>
-    <aside className="sidebar">
-      <a className="brand" href="#" onClick={event => { event.preventDefault(); navigate('overview'); }} aria-label="Apply overview"><span className="brand-mark"><Check size={24} weight="bold" /></span><span>Apply</span></a>
-      <div className="workspace-label">Workspace</div>
-      <nav aria-label="Main navigation">{pages.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item${page === id ? ' active' : ''}`} onClick={() => navigate(id)} aria-label={label} title={label} aria-current={page === id ? 'page' : undefined}><Icon size={21} weight={page === id ? 'fill' : 'regular'} /><span>{label}</span>{id === 'tasks' && pendingTasks.length > 0 && <span className="nav-count">{pendingTasks.length}</span>}</button>)}</nav>
-      <div className="sidebar-bottom">
-        <button className="sidebar-connection" onClick={() => navigate('connections')}><EnvelopeSimple size={19} /><span>{settings?.inboxes.length ? `${settings.inboxes.length} ${settings.inboxes.length === 1 ? 'inbox connected' : 'inboxes connected'}` : 'Connect an inbox'}</span><Plus size={15} /></button>
-        <div className="local-status"><ShieldCheck size={17} /><span>Saved on this computer</span></div>
-      </div>
-    </aside>
     <div className="main-shell">
       <header className="topbar">
-        <div className="workspace-control"><span className="workspace-avatar" aria-hidden="true">{workspace === 'demo' ? 'D' : 'M'}</span><label className="sr-only" htmlFor="workspace-select">Workspace</label><select id="workspace-select" value={workspace} onChange={event => switchWorkspace(event.target.value as Workspace)}><option value="personal">My workspace</option><option value="demo">Demo workspace</option></select></div>
-        <div className="topbar-actions"><span className="topbar-date"><CalendarBlank size={16} />{new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span><span className={`tracking-status${sessionActive ? ' running' : ''}`} role="status"><span className="status-dot" />{sessionActive ? screenActive ? 'Screen capture on' : 'Session active' : 'Tracking off'}</span><button className={`button ${sessionActive ? 'secondary' : 'primary'} tracking-button`} disabled={trackingBusy} onClick={() => { if (sessionActive) void stopTracking(); else if (workspace === 'demo') notify('Switch to your workspace to start tracking.', true); else { setTrackingError(''); setTrackingOpen(true); } }}>{sessionActive ? <Stop size={16} weight="fill" /> : <Record size={18} />}{trackingBusy ? 'Working…' : sessionActive ? 'Stop tracking' : 'Start tracking'}</button></div>
+        <a className="brand" href="#" onClick={event => { event.preventDefault(); navigate('overview'); }} aria-label="Apply overview"><span className="brand-mark"><Check size={22} weight="bold" /></span><span>Apply</span></a>
+        <nav className="main-navigation" aria-label="Main navigation">{pages.map(({ id, label }) => <button key={id} className={`nav-item${page === id ? ' active' : ''}`} onClick={() => navigate(id)} aria-label={label} title={label} aria-current={page === id ? 'page' : undefined}><span>{label}</span>{id === 'tasks' && pendingTasks.length > 0 && <span className="nav-count">{pendingTasks.length}</span>}</button>)}</nav>
+        <div className="header-controls">
+          <div className="workspace-control"><label className="sr-only" htmlFor="workspace-select">Workspace</label><select id="workspace-select" value={workspace} onChange={event => switchWorkspace(event.target.value as Workspace)}><option value="personal">My workspace</option><option value="demo">Demo workspace</option></select></div>
+          <div className="topbar-actions"><span className={`tracking-status${sessionActive ? ' running' : ''}`} role="status"><span className="status-dot" />{sessionActive ? screenActive ? 'Screen capture on' : 'Session active' : 'Tracking off'}</span><button className={`button ${sessionActive ? 'secondary' : 'primary'} tracking-button`} disabled={trackingBusy} onClick={() => { if (sessionActive) void stopTracking(); else if (workspace === 'demo') notify('Switch to your workspace to start tracking.', true); else { setTrackingError(''); setTrackingOpen(true); } }}>{sessionActive ? <Stop size={16} weight="fill" /> : <Record size={18} />}{trackingBusy ? 'Working…' : sessionActive ? 'Stop tracking' : 'Start tracking'}</button></div>
+        </div>
       </header>
       <main className={`main-content page-${page}`} id="main-content" tabIndex={-1}>
         {workspace === 'demo' && <div className="demo-banner"><span><strong>Demo workspace</strong><span>These are sample applications.</span></span><button onClick={() => switchWorkspace('personal')}>Go to my workspace<ArrowRight size={14} /></button></div>}
