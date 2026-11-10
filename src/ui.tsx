@@ -32,6 +32,19 @@ export function relativeDate(value: string | null | undefined) {
 
 export function isOverdue(task: Task) { return !!task.dueAt && !task.completedAt && parseDisplayDate(task.dueAt, true).getTime() < Date.now(); }
 
+function deadlineTime(value: string | null) {
+  if (!value || /^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
+}
+
+function fullDeadline(value: string | null) {
+  if (!value) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return dateLabel(value, true);
+  return new Date(value).toLocaleString(undefined, { dateStyle: 'full', timeStyle: 'long' });
+}
+
 export function StageBadge({ stage }: { stage: Stage }) {
   return <span className={`stage-badge stage-${stage}`}><span className="status-dot" />{STAGE_LABELS[stage]}</span>;
 }
@@ -65,7 +78,7 @@ export function TaskRow({ task, application, onToggle, onOpen, busy }: {
       {task.completedAt ? <Check size={16} weight="bold" /> : <Circle size={21} />}
     </button>
     {onOpen ? <button className="task-copy" onClick={onOpen}><strong>{task.title}</strong><span>{application.company} <span className="middle-dot">·</span> {application.role}</span></button> : <div className="task-copy"><strong>{task.title}</strong></div>}
-    <span className={`due-label${isOverdue(task) ? ' overdue' : ''}`}>{task.completedAt ? 'Completed' : relativeDate(task.dueAt)}</span>
+    <span className={`due-label${isOverdue(task) ? ' overdue' : ''}`} title={fullDeadline(task.dueAt)}>{task.completedAt ? 'Completed' : relativeDate(task.dueAt)}{!task.completedAt && deadlineTime(task.dueAt) && <span className="due-time">{deadlineTime(task.dueAt)}</span>}</span>
     {link && <a className="icon-button" href={link} target="_blank" rel="noreferrer" aria-label={`Open ${task.title}`}><ArrowUpRight size={17} /></a>}
   </div>;
 }
