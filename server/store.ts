@@ -94,7 +94,8 @@ export class Store {
     return this.saveApplication(next);
   }
   deleteApplication(id: string): void {
-    this.requireApplication(id);
+    const record = this.requireApplication(id);
+    for (const evidence of record.evidence) this.deleteMeta(`evidence-task:${evidence.id}`);
     this.db.prepare('DELETE FROM applications WHERE id = ?').run(id);
   }
 

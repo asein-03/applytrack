@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
+import { request as httpRequest } from 'node:http';
 import { createApp } from '../server/app.js';
 import type { Application, CaptureEvent, Evidence, Task } from '../shared/types.js';
 
@@ -131,7 +132,11 @@ test('workspace cannot be crossed through an explicit evidence application ID', 
 test('local origin, host, JSON and extension pairing boundaries are enforced', async () => {
   await withServer(async (api, base) => {
     assert.equal((await api('/settings', { headers: { Origin: 'https://evil.example' } })).status, 403);
-    assert.equal((await api('/settings', { headers: { Host: 'evil.example' } })).status, 403);
+    const wrongHostStatus = await new Promise<number | undefined>((resolve, reject) => {
+      const request = httpRequest(base + '/api/settings', { headers: { Host: 'evil.example' } }, response => { response.resume(); resolve(response.statusCode); });
+      request.on('error', reject); request.end();
+    });
+    assert.equal(wrongHostStatus, 403);
     assert.equal((await api('/applications', { method: 'POST', body: JSON.stringify(appInput), headers: { 'Content-Type': 'text/plain' } })).status, 415);
     const extensionOrigin = `chrome-extension://${'a'.repeat(32)}`;
     assert.equal((await api('/pairing', { headers: { Origin: extensionOrigin } })).status, 401);

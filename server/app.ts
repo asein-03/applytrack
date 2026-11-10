@@ -86,7 +86,10 @@ export function createApp(options: { dbPath?: string } = {}) {
       response.sendStatus(204); return;
     }
     if (fromExtension && !tokenValid) { response.status(401).json({ error: 'Pair the browser extension with your tracker first.' }); return; }
-    if (!origin && request.get('sec-fetch-site') === 'cross-site') { response.status(403).json({ error: 'Cross-site requests are not allowed.' }); return; }
+    // Google redirects through a cross-site top-level GET. Its route separately
+    // verifies the short-lived, one-use state, browser cookie and PKCE verifier.
+    const oauthCallback = request.method === 'GET' && request.originalUrl.split('?')[0] === '/api/inboxes/google/callback';
+    if (!origin && request.get('sec-fetch-site') === 'cross-site' && !oauthCallback) { response.status(403).json({ error: 'Cross-site requests are not allowed.' }); return; }
     if (origin) { response.setHeader('Access-Control-Allow-Origin', origin); response.setHeader('Vary', 'Origin'); }
     if (['POST', 'PATCH', 'PUT'].includes(request.method) && (Number(request.get('content-length') ?? 0) > 0 || request.get('transfer-encoding')) && !request.is('application/json')) { response.status(415).json({ error: 'Use application/json for request bodies.' }); return; }
     next();
