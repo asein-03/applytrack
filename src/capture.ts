@@ -1,5 +1,6 @@
 import { createWorker, type Worker } from 'tesseract.js';
-import type { Application, CaptureEvent, Evidence, Workspace } from '../shared/types';
+import type { Application, CaptureEvent, Evidence, TrackingSession, Workspace } from '../shared/types';
+import { api } from './api';
 
 export interface CaptureStatus {
   state: 'starting' | 'capturing' | 'stopped' | 'error';
@@ -98,9 +99,8 @@ export async function startCapture(options: CaptureOptions): Promise<CaptureCont
     running = true;
     try {
       // A stopped server session also stops the browser media stream.
-      const sessionResponse = await fetch('/api/sessions/current');
-      if (!sessionResponse.ok) throw new Error('The local tracker is unavailable.');
-      const { session } = await sessionResponse.json();
+      const { session } = await api<{ session: TrackingSession | null }>('/sessions/current', { signal: lifecycle.signal });
+      if (stopped) return;
       if (!session || session.stoppedAt || !session.screenEnabled) {
         await stop();
         return;
@@ -141,14 +141,10 @@ export async function startCapture(options: CaptureOptions): Promise<CaptureCont
         observedAt: lastCheckedAt, sourceId, requiresReview,
         snapshot: canvas.toDataURL('image/jpeg', 0.65),
       };
-      const response = await fetch('/api/events', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(event),
+      const saved = await api<{ application: Application; evidence: Evidence }>('/events', {
+        method: 'POST', body: JSON.stringify(event), signal: lifecycle.signal,
       });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || 'Could not save screen evidence.');
-      }
-      const saved = await response.json();
+      if (stopped) return;
       sent.add(sourceId);
       options.onEvent?.(saved);
       status(requiresReview ? 'Screen evidence saved for review.' : 'Screen confirmation saved.');
