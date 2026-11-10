@@ -21,6 +21,7 @@ async function harness(page: Page, active = true) {
   const session = { id: 'session-one', browserEnabled: active, screenEnabled: false, stoppedAt: null as string | null };
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let eventFailures = 0;
+  let archiveFailures = 0;
   let listener: (message: Message, sender: any, respond: (value: any) => void) => void = () => {};
   const noopListener = { addListener: () => undefined };
   const local = { token: 'test-pairing-token-only' };
@@ -49,8 +50,9 @@ async function harness(page: Page, active = true) {
         const event = JSON.parse(init.body!) as Capture;
         attempts.push(event);
         if (eventFailures > 0) { eventFailures--; return { ok: false, status: 503, json: async () => ({ error: 'Fixture temporarily unavailable' }) }; }
+        if (archiveFailures > 0) { archiveFailures--; return { ok: true, status: 201, json: async () => ({ application: { id: 'fixture-application', documents: [{ stored: false }] }, evidence: {}, archiveError: 'The document name was recorded, but its cloud copy could not be saved.' }) }; }
         posted.push(event);
-        return { ok: true, status: 200, json: async () => ({ application: { id: 'fixture-application' }, evidence: {} }) };
+        return { ok: true, status: 200, json: async () => ({ application: { id: 'fixture-application', documents: [{ stored: true }] }, evidence: {} }) };
       }
       throw new Error(`Unexpected fixture network request: ${url}`);
     },
@@ -83,6 +85,7 @@ async function harness(page: Page, active = true) {
   const refresh = () => page.evaluate(() => Promise.all((window as any).__companionListeners.map((fn: any) => new Promise(resolve => fn({ type: 'refresh' }, {}, resolve)))));
   return { saved, posted, attempts, titles, session, send, open, refresh,
     failEvents: (count: number) => { eventFailures = count; },
+    failArchives: (count: number) => { archiveFailures = count; },
     dispose: () => { for (const timer of timers) clearTimeout(timer); },
   };
 }
@@ -329,4 +332,21 @@ test('popup shows pending captures and persistent failure details with clear rec
   await page.getByRole('button', { name: 'Dismiss' }).click();
   await expect(page.locator('#capture-notice')).toBeHidden();
   expect(await page.evaluate(() => (window as any).__popupActions)).toEqual(expect.arrayContaining(['retry-captures', 'dismiss-capture-error']));
+});
+
+
+test('partial HTTP 201 archive failures retain and retry the original copy until storage succeeds', async ({ page }) => {
+  const h = await setup(page);
+  h.failArchives(1);
+  await select(page, '#resume-upload', '%PDF-partial-archive');
+  await expect.poll(() => h.titles.some(title => title.includes('waiting for the local app'))).toBe(true);
+  const pending = await h.send({ type: 'state' });
+  expect(pending.pendingCaptures).toBe(1);
+  expect(JSON.stringify(h.saved)).not.toContain('contentBase64');
+  await expect.poll(() => selected(h).length, { timeout: 8_000 }).toBe(1);
+  expect(h.attempts).toHaveLength(2);
+  expect(h.attempts[0]).toEqual(h.attempts[1]);
+  expect(selected(h)[0].document?.contentBase64).toBe(Buffer.from('%PDF-partial-archive').toString('base64'));
+  const complete = await h.send({ type: 'state' });
+  expect(complete.pendingCaptures).toBe(0); expect(complete.captureError).toBeNull();
 });
