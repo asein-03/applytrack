@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Apply Companion</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header><span class="mark">A</span><div><h1>Apply</h1><p>Browser companion</p></div></header>
+    <div class="status"><span id="indicator"></span><strong id="status">Checking connection</strong></div>
+    <p id="message" role="status" aria-live="polite">Keep the local Apply app running.</p>
+    <form id="pair-form">
+      <label for="token">Pairing token</label>
+      <input id="token" type="password" autocomplete="off" placeholder="Copy from Connections in Apply" />
+      <button type="submit" class="secondary">Connect extension</button>
+    </form>
+    <div class="actions">
+      <button id="start" type="button">Start browser tracking</button>
+      <button id="stop" type="button" class="secondary" hidden>Stop browser tracking</button>
+      <button id="save" type="button" class="secondary">Save this job</button>
+      <button id="open" type="button" class="text">Open dashboard ↗</button>
+    </div>
+    <p class="footnote">Automatic capture supports Greenhouse, Lever and Ashby. Screen capture is controlled from the dashboard.</p>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>
