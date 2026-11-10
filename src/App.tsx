@@ -236,7 +236,7 @@ export default function App() {
     <aside className="sidebar">
       <a className="brand" href="#" onClick={event => { event.preventDefault(); navigate('overview'); }} aria-label="Apply overview"><span className="brand-mark"><Check size={24} weight="bold" /></span><span>Apply</span></a>
       <div className="workspace-label">Workspace</div>
-      <nav aria-label="Main navigation">{pages.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item${page === id ? ' active' : ''}`} onClick={() => navigate(id)} aria-current={page === id ? 'page' : undefined}><Icon size={21} weight={page === id ? 'fill' : 'regular'} /><span>{label}</span>{id === 'tasks' && pendingTasks.length > 0 && <span className="nav-count">{pendingTasks.length}</span>}</button>)}</nav>
+      <nav aria-label="Main navigation">{pages.map(({ id, label, icon: Icon }) => <button key={id} className={`nav-item${page === id ? ' active' : ''}`} onClick={() => navigate(id)} aria-label={label} title={label} aria-current={page === id ? 'page' : undefined}><Icon size={21} weight={page === id ? 'fill' : 'regular'} /><span>{label}</span>{id === 'tasks' && pendingTasks.length > 0 && <span className="nav-count">{pendingTasks.length}</span>}</button>)}</nav>
       <div className="sidebar-bottom">
         <button className="sidebar-connection" onClick={() => navigate('connections')}><EnvelopeSimple size={19} /><span>{settings?.inboxes.length ? `${settings.inboxes.length} ${settings.inboxes.length === 1 ? 'inbox connected' : 'inboxes connected'}` : 'Connect an inbox'}</span><Plus size={15} /></button>
         <div className="local-status"><ShieldCheck size={17} /><span>Saved on this computer</span></div>
