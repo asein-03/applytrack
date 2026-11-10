@@ -11,8 +11,8 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('POR
 const production = process.argv.includes('--production');
 if (production && !existsSync(resolve('dist/index.html'))) throw new Error('Run npm run build before npm start.');
 if (production && !process.env.APP_ORIGIN) process.env.APP_ORIGIN = `http://127.0.0.1:${port}`;
-const { app, store, close } = createApp();
-const email = attachEmailRoutes(app, store, { dataDir });
+const { app, store, cloud, repository, close } = createApp();
+const email = attachEmailRoutes(app, store, { dataDir, cloud, repository });
 
 app.get('/api/extension/download', (_req, res) => {
   res.setHeader('Content-Type', 'application/zip');

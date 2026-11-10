@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Application, CaptureEvent, Evidence, Inbox, Task, TrackingSession, Workspace } from '../shared/types.js';
@@ -8,8 +8,8 @@ export class HttpError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
-export type ApplicationInput = Partial<Omit<Application, 'id' | 'createdAt' | 'updatedAt' | 'tasks' | 'evidence' | 'timeline'>> & { company: string; role: string };
-export type ApplicationPatch = Partial<Omit<Application, 'id' | 'workspace' | 'createdAt' | 'updatedAt' | 'tasks' | 'evidence' | 'timeline'>>;
+export type ApplicationInput = Partial<Omit<Application, 'id' | 'createdAt' | 'updatedAt' | 'tasks' | 'evidence' | 'timeline' | 'documents' | 'resumeDocumentId' | 'coverLetterDocumentId'>> & { company: string; role: string };
+export type ApplicationPatch = Partial<Omit<Application, 'id' | 'workspace' | 'createdAt' | 'updatedAt' | 'tasks' | 'evidence' | 'timeline' | 'documents' | 'resumeDocumentId' | 'coverLetterDocumentId'>>;
 export type TaskInput = { title: string; dueAt?: string | null; url?: string | null };
 export type TaskPatch = Partial<TaskInput & { completedAt: string | null }>;
 
@@ -77,6 +77,7 @@ export class Store {
       stage: input.stage ?? 'saved', location: input.location ?? '', workMode: input.workMode ?? '', salary: input.salary ?? '',
       url: input.url ?? '', jobId: input.jobId ?? '', description: input.description ?? '', email: input.email ?? '',
       resumeName: input.resumeName ?? '', coverLetterName: input.coverLetterName ?? '', recruiterName: input.recruiterName ?? '',
+      documents: [], resumeDocumentId: null, coverLetterDocumentId: null,
       recruiterEmail: input.recruiterEmail ?? '', notes: input.notes ?? '', priority: input.priority ?? 'normal',
       appliedAt: input.appliedAt ?? null, createdAt: now, updatedAt: now, tasks: [], evidence: [],
       timeline: [{ id: randomUUID(), title: 'Application added', detail: 'Added to your tracker.', source: 'manual', createdAt: now }],
@@ -87,6 +88,8 @@ export class Store {
     const record = this.requireApplication(id);
     const now = new Date().toISOString();
     const next = { ...record, ...patch, updatedAt: now };
+    if (patch.resumeName !== undefined && patch.resumeName !== record.resumeName) next.resumeDocumentId = null;
+    if (patch.coverLetterName !== undefined && patch.coverLetterName !== record.coverLetterName) next.coverLetterDocumentId = null;
     if (patch.stage && patch.stage !== record.stage) {
       next.timeline = [{ id: randomUUID(), title: 'Stage updated', detail: `Changed from ${record.stage.replaceAll('_', ' ')} to ${patch.stage.replaceAll('_', ' ')}.`, source: 'manual', createdAt: now }, ...record.timeline];
       if (!next.appliedAt && !['saved', 'in_progress'].includes(patch.stage)) next.appliedAt = now;
@@ -95,7 +98,9 @@ export class Store {
   }
   deleteApplication(id: string): void {
     const record = this.requireApplication(id);
-    for (const evidence of record.evidence) this.deleteMeta(`evidence-task:${evidence.id}`);
+    const processed = this.db.prepare('SELECT source, workspace, source_id FROM processed_events WHERE application_id=?').all(id) as Array<{ source: string; workspace: string; source_id: string }>;
+    for (const item of processed) this.setMeta(deletedEventKey(item.source, item.workspace, item.source_id), true);
+    for (const evidence of record.evidence) { this.deleteMeta(`evidence-task:${evidence.id}`); this.deleteMeta(`evidence-document:${evidence.id}`); }
     this.db.prepare('DELETE FROM applications WHERE id = ?').run(id);
   }
 
@@ -137,6 +142,7 @@ export class Store {
   }
   findProcessedEvent(input: CaptureEvent): { application: Application; evidence: Evidence } | null {
     if (!input.sourceId) return null;
+    if (this.getMeta(deletedEventKey(input.source, input.workspace ?? 'personal', input.sourceId))) throw new HttpError(410, 'This evidence belongs to a deleted application. It cannot be imported again.');
     const row = this.db.prepare('SELECT application_id,evidence_id FROM processed_events WHERE source=? AND workspace=? AND source_id=?').get(input.source, input.workspace ?? 'personal', input.sourceId) as { application_id: string; evidence_id: string } | undefined;
     if (!row) return null;
     const application = this.getApplication(row.application_id);
@@ -162,4 +168,8 @@ export class Store {
     this.setMeta('currentSession', stopped);
     this.setMeta(`session:${stopped.id}`, stopped);
   }
+}
+
+function deletedEventKey(source: string, workspace: string, sourceId: string): string {
+  return `deleted-event:${workspace}:${createHash('sha256').update(JSON.stringify([source, workspace, sourceId])).digest('hex')}`;
 }

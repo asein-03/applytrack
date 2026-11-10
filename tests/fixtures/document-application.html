@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Northstar — Product Designer</title>
+  <script type="application/ld+json">{"@type":"JobPosting","title":"Product Designer","hiringOrganization":{"name":"Northstar"},"identifier":{"value":"role-123"}}</script>
+</head>
+<body>
+  <main>
+    <h1>Product Designer</h1>
+    <form onsubmit="event.preventDefault()">
+      <label for="resume-upload">Résumé</label><input id="resume-upload" type="file">
+      <span id="letter-label">Cover letter</span><input id="letter-upload" type="file" aria-labelledby="letter-label">
+      <label for="portfolio">Portfolio</label><input id="portfolio" type="file">
+      <label for="other-resume">Additional CV</label><input id="other-resume" type="file">
+      <input name="private-answer" value="Never capture this answer">
+      <button type="submit">Submit application</button>
+      <button type="reset">Reset form</button>
+    </form>
+    <h2 id="confirmation" hidden>Your application has been submitted.</h2>
+  </main>
+</body>
+</html>
