@@ -8,6 +8,7 @@ let paired = false;
 let active = false;
 let busy = '';
 let editingPairing = false;
+let pendingCaptures = 0;
 const message = (text, error = false) => {
   $('#message').textContent = text;
   $('#message').classList.toggle('error', error);
@@ -22,6 +23,8 @@ function renderControls() {
   $('#pair-submit').disabled = !!busy;
   $('#token').disabled = !!busy;
   $('#retry').disabled = !!busy;
+  $('#capture-retry').disabled = !!busy;
+  $('#capture-retry').textContent = busy === 'capture' ? 'Checking…' : pendingCaptures ? 'Check saves' : 'Dismiss';
   $('#change-pairing').disabled = !!busy;
   $('#pair-cancel').disabled = !!busy;
   $('#pair-form').hidden = paired && !editingPairing;
@@ -37,9 +40,21 @@ async function send(payload) {
   if (!result?.ok) throw new Error(result?.error || 'The extension could not complete this action.');
   return result;
 }
-async function refresh() {
+function renderCaptureNotice(result) {
+  const pending = Math.max(0, Number(result.pendingCaptures) || 0);
+  pendingCaptures = pending;
+  const error = typeof result.captureError === 'string' ? result.captureError : '';
+  $('#capture-notice').hidden = !pending && !error;
+  $('#capture-notice').classList.toggle('error', !!error && !pending);
+  $('#capture-notice').setAttribute('role', error && !pending ? 'alert' : 'status');
+  $('#capture-heading').textContent = pending ? `${pending} ${pending === 1 ? 'capture' : 'captures'} waiting to save` : 'Capture needs attention';
+  $('#capture-detail').textContent = error || 'Keep tracking on while these captures save.';
+}
+async function refresh(preserveMessage = false) {
   try {
     const result = await send({ type: 'state' });
+    const previousActive = active;
+    const previousPaired = paired;
     paired = !!result.paired;
     active = !!(result.session?.browserEnabled && !result.session.stoppedAt);
     $('#status').textContent = active ? 'Browser tracking is on' : paired ? 'Ready to track' : 'Connect to Apply';
@@ -47,7 +62,8 @@ async function refresh() {
     $('#indicator').classList.remove('error');
     $('#connection-label').textContent = paired ? 'Local app connected' : 'Pairing required';
     $('#retry').hidden = true;
-    message(active ? 'Applications on supported sites are being tracked.' : paired ? 'Start a session before you begin applying.' : 'Pair this extension with the dashboard on your computer.');
+    renderCaptureNotice(result);
+    if (!preserveMessage || previousActive !== active || previousPaired !== paired) message(active ? 'Applications on supported sites are being tracked.' : paired ? 'Start a session before you begin applying.' : 'Pair this extension with the dashboard on your computer.');
   } catch (error) {
     paired = false;
     active = false;
@@ -108,5 +124,13 @@ $('#retry').addEventListener('click', async () => {
   busy = 'refresh'; renderControls();
   try { await refresh(); } finally { busy = ''; renderControls(); }
 });
+$('#capture-retry').addEventListener('click', async () => {
+  if (busy) return;
+  busy = 'capture'; renderControls();
+  try { renderCaptureNotice(await send({ type: pendingCaptures ? 'retry-captures' : 'dismiss-capture-error' })); }
+  catch (error) { message(error.message, true); }
+  finally { busy = ''; renderControls(); }
+});
+setInterval(() => { if (!busy && !editingPairing) void refresh(true); }, 3000);
 $('#open').addEventListener('click', () => { chrome.tabs.create({ url: 'http://127.0.0.1:5173' }); });
 void refresh();

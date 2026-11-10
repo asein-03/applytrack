@@ -12,6 +12,11 @@
       <section class="tracking-panel" aria-labelledby="status">
         <div class="status"><span id="indicator" aria-hidden="true"></span><h2 id="status">Checking connection</h2></div>
         <p id="message" role="status" aria-live="polite">Keep the local Apply app running.</p>
+        <aside id="capture-notice" class="capture-notice" role="status" aria-live="polite" hidden>
+          <strong id="capture-heading"></strong>
+          <p id="capture-detail"></p>
+          <button id="capture-retry" type="button" class="text">Check saves</button>
+        </aside>
         <div class="tracking-actions">
           <button id="start" type="button" disabled>Start browser tracking</button>
           <button id="stop" type="button" hidden>Stop browser tracking</button>
