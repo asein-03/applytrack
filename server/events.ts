@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Application, CaptureEvent, Evidence, EventKind, Stage } from '../shared/types.js';
 import { HttpError, Store } from './store.js';
+import { applyDocumentEvidence, documentMetadata } from './documents.js';
 
 const normalized = (value: string) => value.normalize('NFKC').trim().toLowerCase().replace(/\s+/g, ' ');
 function canonicalUrl(value: string): string {
@@ -78,6 +79,8 @@ function matchApplication(store: Store, input: CaptureEvent): Application {
 }
 
 export function ingestEvent(store: Store, input: CaptureEvent): { application: Application; evidence: Evidence } {
+  // Content belongs to private object storage, including while evidence is pending.
+  input = { ...input, ...(input.document ? { document: documentMetadata(input.document) } : {}), ...(input.documents ? { documents: input.documents.map(documentMetadata) } : {}) };
   return store.transaction(() => {
     const existing = store.findProcessedEvent(input);
     if (existing) {
@@ -94,8 +97,11 @@ export function ingestEvent(store: Store, input: CaptureEvent): { application: A
       review, sourceId: input.sourceId ?? null,
     };
     application.evidence.unshift(evidence);
-    if (review === 'accepted') applyAcceptedEvidence(application, evidence, input);
-    else if (input.task) store.setMeta(`evidence-task:${evidence.id}`, input.task);
+    if (review === 'accepted') { applyAcceptedEvidence(application, evidence, input); applyDocumentEvidence(application, input, evidence); }
+    else {
+      if (input.task) store.setMeta(`evidence-task:${evidence.id}`, input.task);
+      if (input.document || input.documents) store.setMeta(`evidence-document:${evidence.id}`, input);
+    }
     application.timeline.unshift({ id: randomUUID(), title: review === 'pending' ? 'Evidence needs review' : evidence.summary, detail: review === 'pending' ? evidence.summary : (input.excerpt ?? ''), source: input.source, createdAt: evidence.observedAt });
     application.updatedAt = now;
     store.saveApplication(application);
@@ -116,8 +122,11 @@ export function reviewEvidence(store: Store, evidenceId: string, action: 'accept
       // Explicit user approval can replace conflicting terminal stages.
       if (stageByKind[evidence.kind] && ['offer', 'rejected', 'withdrawn'].includes(application.stage)) application.stage = stageByKind[evidence.kind]!;
       applyAcceptedEvidence(application, evidence, task ? { source: evidence.source, kind: evidence.kind, summary: evidence.summary, task } : undefined);
+      const documentEvent = store.getMeta<CaptureEvent>(`evidence-document:${evidenceId}`);
+      if (documentEvent) applyDocumentEvidence(application, documentEvent, evidence);
     }
     store.deleteMeta(`evidence-task:${evidenceId}`);
+    store.deleteMeta(`evidence-document:${evidenceId}`);
     application.updatedAt = new Date().toISOString();
     application.timeline.unshift({ id: randomUUID(), title: action === 'accept' ? 'Evidence accepted' : 'Evidence dismissed', detail: evidence.summary, source: 'manual', createdAt: application.updatedAt });
     return store.saveApplication(application);

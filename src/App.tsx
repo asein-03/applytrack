@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, ArrowUpRight, Briefcase, CaretRight, Check, CheckCircle, DownloadSimple, EnvelopeSimple, Flag, LinkSimple, MagnifyingGlass, Monitor, Plus, Record, ShieldCheck, SquaresFour, Stop, WarningCircle, X } from '@phosphor-icons/react';
 import type { Application, Settings, Task, TrackingSession, Workspace } from '../shared/types';
 import { STAGES, STAGE_LABELS } from '../shared/types';
-import { api } from './api';
+import { api, apiBlob } from './api';
+import { useCloudAccount } from './AuthGate';
 import { startCapture, type CaptureController, type CaptureStatus } from './capture';
 import { CompanyMark, dateLabel, EmptyState, isOverdue, Modal, relativeDate, StageBadge, TaskRow } from './ui';
 import ApplicationEditor from './ApplicationEditor';
@@ -22,6 +23,7 @@ function nextTask(application: Application) {
 }
 
 export default function App() {
+  const account = useCloudAccount();
   const [page, setPage] = useState<Page>('overview');
   const [workspace, setWorkspace] = useState<Workspace>(() => localStorage.getItem('apply.workspace') === 'demo' ? 'demo' : 'personal');
   const workspaceRef = useRef(workspace);
@@ -40,6 +42,7 @@ export default function App() {
   const [editor, setEditor] = useState<Application | 'new' | null>(null);
   const [taskView, setTaskView] = useState<'upcoming' | 'completed'>('upcoming');
   const [taskBusy, setTaskBusy] = useState('');
+  const [exporting, setExporting] = useState(false);
   const [toast, setToast] = useState<{ message: string; error: boolean } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [trackingOpen, setTrackingOpen] = useState(false);
@@ -50,6 +53,7 @@ export default function App() {
   const capture = useRef<CaptureController | null>(null);
   const applicationsRef = useRef<Application[]>([]);
   const stopping = useRef(false);
+  const appLifecycle = useRef<AbortController | null>(null);
   const sessionActive = !!settings?.session && !settings.session.stoppedAt;
   const screenActive = captureStatus?.state === 'capturing';
 
@@ -78,7 +82,7 @@ export default function App() {
     localStorage.setItem('apply.workspace', workspace);
     return () => clearInterval(interval);
   }, [workspace, refresh]);
-  useEffect(() => () => { void capture.current?.stop(); if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+  useEffect(() => { const lifecycle = new AbortController(); appLifecycle.current = lifecycle; stopping.current = false; return () => { lifecycle.abort(); stopping.current = true; const controller = capture.current; capture.current = null; void controller?.stop(); if (toastTimer.current) clearTimeout(toastTimer.current); }; }, []);
   useEffect(() => {
     if (!loading && !trackingBusy && !sessionActive && capture.current) {
       const controller = capture.current;
@@ -89,7 +93,7 @@ export default function App() {
   }, [loading, trackingBusy, sessionActive]);
   useEffect(() => {
     const stopOnLeave = () => {
-      if (sessionActive) void fetch('/api/sessions/current', { method: 'DELETE', keepalive: true });
+      if (sessionActive) void api('/sessions/current', { method: 'DELETE', keepalive: true }).catch(() => undefined);
     };
     window.addEventListener('pagehide', stopOnLeave);
     return () => window.removeEventListener('pagehide', stopOnLeave);
@@ -132,6 +136,17 @@ export default function App() {
     try { await api(`/applications/${selected.id}`, { method: 'DELETE' }); setSelectedId(null); await refresh(); notify('Application deleted.'); }
     catch (error) { notify(error instanceof Error ? error.message : 'Could not delete application.', true); }
   }
+  async function exportApplications() {
+    setExporting(true);
+    try {
+      const blob = await apiBlob(`/export?workspace=${workspace}`);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a'); link.href = url; link.download = `apply-applications-${workspace}.csv`;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) { notify(error instanceof Error ? error.message : 'Could not export applications.', true); }
+    finally { setExporting(false); }
+  }
   async function stopTracking() {
     if (stopping.current) return;
     stopping.current = true; setTrackingBusy(true);
@@ -143,6 +158,7 @@ export default function App() {
   }
   async function beginTracking() {
     if (workspace === 'demo') return;
+    const lifecycle = appLifecycle.current;
     setTrackingBusy(true); setTrackingError('');
     try {
       if (screenEnabled) {
@@ -156,8 +172,10 @@ export default function App() {
           onEvent: () => { void refresh(); },
           onError: message => notify(message, true),
         });
+        if (lifecycle?.signal.aborted) { await capture.current.stop(); capture.current = null; return; }
       }
-      const session = await api<TrackingSession>('/sessions', { method: 'POST', body: JSON.stringify({ browserEnabled: true, screenEnabled }) });
+      const session = await api<TrackingSession>('/sessions', { method: 'POST', body: JSON.stringify({ browserEnabled: true, screenEnabled }), signal: lifecycle?.signal });
+      if (lifecycle?.signal.aborted) return;
       capture.current?.activate(); setSettings(previous => previous ? { ...previous, session } : previous); await refresh(); setTrackingOpen(false);
       notify(screenEnabled ? 'Tracking session started with screen capture.' : 'Browser tracking session started.');
     } catch (error) {
@@ -171,7 +189,7 @@ export default function App() {
     return <section className="applications-section" aria-label="Application list">
       <div className="section-heading table-section-heading">
         <div className="heading-with-count"><h2>{page === 'overview' ? 'Recent applications' : 'All applications'}</h2><span className="count-pill">{applications.length}</span></div>
-        <a className="button quiet small" href={`/api/export?workspace=${workspace}`} download><DownloadSimple size={16} />Export</a>
+        <button className="button quiet small" onClick={() => void exportApplications()} disabled={exporting}><DownloadSimple size={16} />{exporting ? 'Exporting…' : 'Export'}</button>
       </div>
       <div className="table-toolbar">
         <div className="search-field"><MagnifyingGlass size={18} /><input aria-label="Search applications" placeholder="Search company or role" value={search} onChange={event => setSearch(event.target.value)} />{search && <button className="icon-button" aria-label="Clear search" onClick={() => setSearch('')}><X size={15} /></button>}</div>
@@ -192,7 +210,7 @@ export default function App() {
           </tr>;
         })}
       </tbody></table>{visible.length === 0 && <div className="filtered-empty"><MagnifyingGlass size={26} /><h3>No matching applications</h3><p>Try another company, role or stage.</p><button className="button secondary small" onClick={() => { setSearch(''); setStageFilter('all'); setHighOnly(false); }}>Clear filters</button></div>}</div>
-      <div className="table-footer"><span>{visible.length} of {applications.length} applications</span>{page === 'overview' && applications.length > 8 ? <button className="text-button" onClick={() => navigate('applications')}>View all applications<ArrowRight size={15} /></button> : <span><Check size={13} />Saved locally</span>}</div>
+      <div className="table-footer"><span>{visible.length} of {applications.length} applications</span>{page === 'overview' && applications.length > 8 ? <button className="text-button" onClick={() => navigate('applications')}>View all applications<ArrowRight size={15} /></button> : <span><Check size={13} />{account.enabled ? 'Stored in your account' : 'Saved in test workspace'}</span>}</div>
     </section>;
   }
 
@@ -267,7 +285,7 @@ export default function App() {
     {selected && <ApplicationDetail key={selected.id} application={selected} onClose={() => setSelectedId(null)} onRestoreFocus={() => (applicationOpener.current?.isConnected ? applicationOpener.current : document.getElementById('main-content'))?.focus()} onChange={() => void refresh()} onEdit={() => setEditor(selected)} onDelete={() => void deleteApplication()} onTaskToggle={toggleTask} onError={message => notify(message, true)} />}
     {editor && <ApplicationEditor application={editor === 'new' ? undefined : editor} workspace={workspace} onClose={() => setEditor(null)} onSaved={application => { setEditor(null); setSelectedId(application.id); void refresh(); notify(editor === 'new' ? 'Application added.' : 'Application updated.'); }} />}
     <Modal open={trackingOpen} onClose={() => { if (!trackingBusy) setTrackingOpen(false); }} title="Start tracking" description="Keep this dashboard open while you apply.">
-      <div className="modal-body tracking-body"><div className="tracking-option"><span className="setup-icon"><LinkSimple size={23} /></span><div><strong>Browser tracking</strong><p>Capture job details and submission confirmations with the paired extension.</p></div><Check size={19} /></div><label className="tracking-option screen-option"><span className="setup-icon"><Monitor size={23} /></span><span><strong>Screen confirmation</strong><span className="option-description">Check the browser window or tab you choose for a second confirmation.</span></span><input type="checkbox" role="switch" checked={screenEnabled} onChange={event => setScreenEnabled(event.target.checked)} /></label><div className="capture-note"><ShieldCheck size={18} /><p>Screen analysis runs on this computer. Only confirmation snapshots are saved.</p></div>{captureStatus?.state === 'starting' && <p className="capture-progress" role="status">{captureStatus.message}</p>}{trackingError && <p className="form-error" role="alert">{trackingError}</p>}</div>
+      <div className="modal-body tracking-body"><div className="tracking-option"><span className="setup-icon"><LinkSimple size={23} /></span><div><strong>Browser tracking</strong><p>Capture job details and submission confirmations with the paired extension.</p></div><Check size={19} /></div><label className="tracking-option screen-option"><span className="setup-icon"><Monitor size={23} /></span><span><strong>Screen confirmation</strong><span className="option-description">Check the browser window or tab you choose for a second confirmation.</span></span><input type="checkbox" role="switch" checked={screenEnabled} onChange={event => setScreenEnabled(event.target.checked)} /></label><div className="capture-note"><ShieldCheck size={18} /><p>{account.enabled ? 'Screen analysis runs on this computer. Matched confirmation snapshots and job details are saved to your account.' : 'Screen analysis runs on this computer. Confirmation snapshots are saved in this test workspace.'}</p></div>{captureStatus?.state === 'starting' && <p className="capture-progress" role="status">{captureStatus.message}</p>}{trackingError && <p className="form-error" role="alert">{trackingError}</p>}</div>
       <div className="modal-footer"><button className="button secondary" onClick={() => setTrackingOpen(false)} disabled={trackingBusy}>Cancel</button><button className="button primary" onClick={() => void beginTracking()} disabled={trackingBusy}><Record size={17} />{trackingBusy ? 'Starting…' : screenEnabled ? 'Choose screen and start' : 'Start session'}</button></div>
     </Modal>
     {toast && <div className={`toast${toast.error ? ' error' : ''}`} role={toast.error ? 'alert' : 'status'}>{toast.error ? <WarningCircle size={19} /> : <CheckCircle size={19} />}<span>{toast.message}</span><button className="icon-button" aria-label="Dismiss notification" onClick={() => setToast(null)}><X size={15} /></button></div>}

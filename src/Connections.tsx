@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowClockwise, CaretDown, CaretRight, Check, Copy, Desktop, DownloadSimple, EnvelopeSimple, FileText, LinkSimple, Plus, Trash, WarningCircle } from '@phosphor-icons/react';
+import { ArrowClockwise, CaretDown, CaretRight, Check, Cloud, Copy, DownloadSimple, EnvelopeSimple, FileText, LinkSimple, Plus, SignOut, Trash, UserCircle, WarningCircle } from '@phosphor-icons/react';
 import type { Application, Settings, Workspace } from '../shared/types';
 import { api } from './api';
+import { useCloudAccount } from './AuthGate';
 import { dateLabel, Modal } from './ui';
 import './connections.css';
 
@@ -18,6 +19,7 @@ export default function Connections({ settings, applications, workspace, onChang
   settings: Settings | null; applications: Application[]; workspace: Workspace;
   onChange: () => void; notify: (message: string, error?: boolean) => void;
 }) {
+  const account = useCloudAccount();
   const [busy, setBusy] = useState('');
   const [showToken, setShowToken] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -111,6 +113,7 @@ export default function Connections({ settings, applications, workspace, onChang
   const closeReview = () => { if (!busy.startsWith('review:')) setSelected(null); };
 
   return <div className="connection-settings">
+    {account.enabled && <section className="cn-section" aria-labelledby="cloud-account-heading"><div className="cn-section-heading"><div><h2 id="cloud-account-heading">Your account</h2><p>Application records and saved documents stay with your account.</p></div><UserCircle size={23} aria-hidden="true" /></div><div className="cn-group cloud-account-row"><div><strong>{account.email || 'Signed-in account'}</strong><span>Signing out stops tracking on this device.</span></div><button className="button secondary small" onClick={() => void account.signOut?.()}><SignOut size={16} />Sign out</button></div></section>}
     <section className="cn-section" aria-labelledby="email-accounts-heading">
       <div className="cn-section-heading"><div><h2 id="email-accounts-heading">Email accounts</h2><p>Keep responses and next steps with the right application.</p></div><EnvelopeSimple size={22} aria-hidden="true" /></div>
       <div className="cn-group">
@@ -122,9 +125,9 @@ export default function Connections({ settings, applications, workspace, onChang
         </div>) : <div className="cn-inbox-row cn-empty-inbox"><span className="cn-provider" aria-hidden="true"><EnvelopeSimple size={21} /></span><div className="cn-inbox-copy"><strong>No inbox connected</strong><span>Connect Gmail or import an email to add updates.</span></div><span className="cn-health cn-health-neutral">Not connected</span></div>}
         <div className="cn-group-actions"><button className="button primary" onClick={() => void connect()} disabled={!!busy || !settings?.gmailConfigured}><Plus size={17} />{busy === 'connect' ? 'Connecting…' : 'Connect Gmail'}</button><button className="button secondary" onClick={() => { setImportError(''); setImportOpen(true); }} disabled={!!busy}><FileText size={17} />Import email</button><span className="cn-actions-note">Gmail is supported.</span></div>
         {actionError && <div className="cn-inline-error" role="alert"><WarningCircle size={17} /><p>{actionError}</p><button className="text-button" onClick={() => setActionError('')}>Dismiss</button></div>}
-        {settings && !settings.gmailConfigured && <details className="cn-setup"><summary><span>Google setup required</span><CaretDown size={15} /></summary><div className="cn-setup-body"><p>Add a Google OAuth web client to enable account connections. You can import emails before setup is complete.</p><div className="cn-config-row"><span>Local configuration</span><code>.env</code></div><div className="cn-config-row"><span>Required values</span><code>GOOGLE_CLIENT_ID<br />GOOGLE_CLIENT_SECRET</code></div><div className="cn-config-row"><span>Redirect URI</span><code>http://127.0.0.1:4318/api/inboxes/google/callback</code></div><p>Restart the local server after saving these values.</p></div></details>}
+        {settings && !settings.gmailConfigured && <details className="cn-setup"><summary><span>Google setup required</span><CaretDown size={15} /></summary><div className="cn-setup-body"><p>Gmail connections are not configured on this server. You can import emails until setup is complete.</p></div></details>}
       </div>
-      <p className="cn-section-footnote">Inboxes are checked while the local app is running. Your existing emails stay in your inbox.</p>
+      <p className="cn-section-footnote">Inboxes are checked while the app service is running. Your existing emails stay in your inbox.</p>
     </section>
 
     {(items.length > 0 || reviewError) && <section className="cn-section" aria-labelledby="email-review-heading">
@@ -145,7 +148,7 @@ export default function Connections({ settings, applications, workspace, onChang
       <p className="cn-section-footnote">Screen capture is separate. Enable it from Start tracking in the dashboard.</p>
     </section>
 
-    <div className="cn-local-note"><Desktop size={19} /><p>Application records and confirmation snapshots are stored on this computer.</p></div>
+    <div className="cn-local-note"><Cloud size={19} /><p>{account.enabled ? 'Application records, document copies and confirmation snapshots are stored in your account.' : 'This test workspace stores application records on this computer.'}</p></div>
 
     <Modal open={importOpen} onClose={closeImport} title="Import an email" description="Paste a confirmation, assessment invitation or recruiter response." wide>
       <form onSubmit={importEmail} aria-busy={busy === 'import'} className="cn-import-form"><div className="modal-body"><label className="field"><span>Email text</span><textarea rows={9} value={text} onChange={event => setText(event.target.value)} placeholder={'From: recruiter@example.com\nSubject: Your application\n\nPaste the message here.'} required maxLength={100000} disabled={busy === 'import'} aria-invalid={!!importError} aria-describedby={importError ? 'email-import-error' : 'email-import-help'} /></label><label className="field"><span>Application</span><select value={applicationId} onChange={event => setApplicationId(event.target.value)} disabled={busy === 'import'}><option value="">Match automatically</option>{applications.map(application => <option key={application.id} value={application.id}>{application.company} · {application.role}</option>)}</select></label><p className="field-help" id="email-import-help">Unclear matches are saved for review. No email is sent.</p>{importError && <p className="form-error" id="email-import-error" role="alert">{importError}</p>}</div><div className="modal-footer"><button className="button secondary" type="button" onClick={closeImport} disabled={busy === 'import'}>Cancel</button><button className="button primary" disabled={busy === 'import'}>{busy === 'import' ? 'Importing…' : 'Import email'}</button></div></form>
