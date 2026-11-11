@@ -80,6 +80,10 @@ export function listReminders(store: Store, now: number): ReminderSnapshot {
 }
 
 export class ReminderService {
+  private preferenceListeners = new Set<(change: { userId: string | null; preferences: ReminderPreferences }) => void>();
+  onPreferencesChanged(listener: (change: { userId: string | null; preferences: ReminderPreferences }) => void): () => void {
+    this.preferenceListeners.add(listener); return () => { this.preferenceListeners.delete(listener); };
+  }
   constructor(private store: Store, private options: { cloud?: CloudService; repository?: WorkspaceRepository; now?: () => number } = {}) {}
   private now() { return (this.options.now ?? Date.now)(); }
   private async run<T>(actor: CloudActor | null, write: boolean, action: (store: Store) => T) {
@@ -90,15 +94,28 @@ export class ReminderService {
   snapshot(actor: CloudActor | null): Promise<ReminderSnapshot> { return this.run(actor, false, store => listReminders(store, this.now())); }
   async preferences(actor: CloudActor | null, patch: unknown): Promise<ReminderPreferences> {
     const input = patchSchema.parse(patch);
-    return this.run(actor, true, store => {
+    const result = await this.run(actor, true, store => {
       const previous = readReminderPreferences(store);
       const next = preferencesSchema.parse({ ...previous, ...input });
       if (next.enabled && !next.timeZone) throw new HttpError(422, 'Choose a time zone before enabling reminders.');
-      if (JSON.stringify(previous) !== JSON.stringify(next)) {
+      const changed = JSON.stringify(previous) !== JSON.stringify(next);
+      if (changed) {
         for (const entry of store.listMeta<ReminderState>('reminder:item:')) if (entry.value.lease) store.setMeta(entry.key, { ...entry.value, lease: null });
       }
       store.setMeta(preferencesKey, next);
-      return next;
+      return { preferences: next, changed };
+    });
+    if (result.changed) for (const listener of this.preferenceListeners) { try { listener({ userId: actor?.id ?? null, preferences: result.preferences }); } catch { /* Notification cleanup cannot invalidate saved preferences. */ } }
+    return result.preferences;
+  }
+  validateDelivery(actor: CloudActor | null, id: string, delivery: { clientId: string; leaseId: string }): Promise<ReminderDelivery | null> {
+    return this.run(actor, false, store => {
+      const now = this.now(), snapshot = listReminders(store, now);
+      if (!snapshot.preferences.enabled || !snapshot.preferences.timeZone) return null;
+      const item = snapshot.items.find(item => item.id === id && item.status === 'due');
+      const lease = store.getMeta<ReminderState>(stateKey(id))?.lease;
+      if (!item || !lease || lease.clientId !== delivery.clientId || lease.id !== delivery.leaseId || new Date(lease.expiresAt).getTime() <= now) return null;
+      return { ...item, leaseId: lease.id, leaseExpiresAt: lease.expiresAt };
     });
   }
   async claim(actor: CloudActor | null, input: { clientId: string; limit?: number }): Promise<ReminderDelivery[]> {

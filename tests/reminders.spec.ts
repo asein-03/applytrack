@@ -56,6 +56,7 @@ test('browser delivery acknowledges only after the operating system shows the no
   await page.goto('/tests/fixtures/reminders.html');
   await expect.poll(() => page.evaluate(() => (window as any).notifications.length)).toBe(1);
   expect(events.some(e => e.path.endsWith('/ack'))).toBe(false);
+  expect(await page.evaluate(() => ({ title: (window as any).notifications[0].title, body: (window as any).notifications[0].options.body }))).toEqual({ title: 'Application deadline', body: 'Open ApplyTrack to view your next task.' });
   await page.evaluate(() => (window as any).notifications[0].onshow());
   await expect.poll(() => events.some(e => e.path.endsWith('/ack'))).toBe(true);
   await expect(page.getByText('Notified', { exact: true })).toBeVisible();

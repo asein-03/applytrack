@@ -9,6 +9,7 @@ import { seedDemo } from './seed.js';
 import { CloudService, WorkspaceRepository, type CloudActor } from './cloud.js';
 import { attachLibraryRoutes } from './library.js';
 import { attachReminderRoutes } from './reminders.js';
+import { createProtectedVault } from './vault.js';
 import { archiveDocument, attachmentFilename, downloadDocument, drainDocumentDeletions, MAX_COPY_BYTES, MAX_DOCUMENT_BYTES, prepareDocumentCapture } from './documents.js';
 
 const text = (limit = 500) => z.string().trim().max(limit);
@@ -73,8 +74,8 @@ export const apiErrorHandler: ErrorRequestHandler = (error, _request, response, 
   response.status(500).json({ error: 'The request could not be completed.' });
 };
 
-export function createApp(options: { dbPath?: string; cloud?: CloudService; repository?: WorkspaceRepository } = {}) {
-  const store = options.cloud?.runtime ?? new Store(options.dbPath ?? resolve(process.env.DATA_DIR ?? 'data', 'apply.sqlite'));
+export function createApp(options: { dbPath?: string; cloud?: CloudService; repository?: WorkspaceRepository; protectRuntime?: boolean } = {}) {
+  const store = options.cloud?.runtime ?? new Store(options.dbPath ?? resolve(process.env.DATA_DIR ?? 'data', 'apply.sqlite'), options.protectRuntime ? createProtectedVault(resolve(process.env.DATA_DIR ?? 'data')) : undefined);
   seedDemo(store);
   const cloud = options.cloud ?? new CloudService(store, resolve(process.env.DATA_DIR ?? 'data'), !options.dbPath && process.env.APP_STORAGE_MODE !== 'local');
   const repository = options.repository ?? new WorkspaceRepository(store, cloud);

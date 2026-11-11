@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Application, CaptureEvent, Evidence, Inbox, Task, TrackingSession, Workspace } from '../shared/types.js';
 
@@ -12,23 +12,74 @@ export type ApplicationInput = Partial<Omit<Application, 'id' | 'createdAt' | 'u
 export type ApplicationPatch = Partial<Omit<Application, 'id' | 'workspace' | 'createdAt' | 'updatedAt' | 'tasks' | 'evidence' | 'timeline' | 'documents' | 'resumeDocumentId' | 'coverLetterDocumentId'>>;
 export type TaskInput = { title: string; dueAt?: string | null; url?: string | null };
 export type TaskPatch = Partial<TaskInput & { completedAt: string | null }>;
+export interface MetadataCodec { encrypt(value: unknown): string; decrypt<T>(value: string): T; }
+const encryptedMetadataPrefix = 'vault-v1:';
 
 /** Single-user local store. Entire record mutations are atomic and kept in SQLite. */
 export class Store {
   readonly db: DatabaseSync;
-  constructor(path: string) {
+  constructor(path: string, private readonly metadataCodec?: MetadataCodec) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
-    this.db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
+    try {
+    this.db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS applications (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, data TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS applications_workspace ON applications(workspace);
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS store_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS processed_events (source TEXT NOT NULL, workspace TEXT NOT NULL, source_id TEXT NOT NULL, application_id TEXT NOT NULL, evidence_id TEXT NOT NULL, PRIMARY KEY(source, workspace, source_id), FOREIGN KEY(application_id) REFERENCES applications(id) ON DELETE CASCADE);
     `);
+    if (path !== ':memory:') chmodSync(path, 0o600);
+    this.prepareMetadata();
     if (!this.getMeta('extensionToken')) this.setMeta('extensionToken', randomBytes(32).toString('hex'));
     // A process restart cannot keep an actual screen stream alive.
     if (this.getSession()) this.stopSession();
+    } catch (error) { this.db.close(); throw error; }
+  }
+
+  private prepareMetadata() {
+    const format = this.db.prepare("SELECT value FROM store_settings WHERE key = 'metadata_encryption'").get() as { value: string } | undefined;
+    const rows = this.db.prepare('SELECT key,value FROM metadata').all() as Array<{ key: string; value: string }>;
+    if (format && format.value !== 'vault-v1') throw new Error('This metadata encryption format is not supported.');
+    if (!this.metadataCodec) {
+      if (format || rows.some(row => row.value.startsWith(encryptedMetadataPrefix))) throw new Error('Open the desktop app to unlock protected runtime data.');
+      return;
+    }
+    if ((format || rows.some(row => row.value.startsWith(encryptedMetadataPrefix))) && rows.some(row => !row.value.startsWith(encryptedMetadataPrefix))) throw new Error('Protected runtime data contains an unencrypted value.');
+    const legacy: Array<{ key: string; value: string }> = [];
+    for (const row of rows) {
+      if (row.value.startsWith(encryptedMetadataPrefix)) this.decodeMetadata(row.key, row.value);
+      else legacy.push({ key: row.key, value: this.encodeMetadata(row.key, JSON.parse(row.value)) });
+    }
+    if (!format || legacy.length) this.transaction(() => {
+      const update = this.db.prepare('UPDATE metadata SET value = ? WHERE key = ?');
+      for (const row of legacy) update.run(row.value, row.key);
+      this.db.prepare("INSERT INTO store_settings(key,value) VALUES ('metadata_encryption','vault-v1') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+      if (legacy.length) this.db.prepare("INSERT INTO store_settings(key,value) VALUES ('metadata_cleanup_pending','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+    });
+    if (this.db.prepare("SELECT key FROM store_settings WHERE key = 'metadata_cleanup_pending'").get()) {
+      const checkpoint = () => {
+        const result = this.db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy: number };
+        if (result.busy) throw new Error('Close other ApplyTrack processes to finish protecting local data.');
+      };
+      checkpoint(); this.db.exec('VACUUM'); checkpoint();
+      this.db.prepare("DELETE FROM store_settings WHERE key = 'metadata_cleanup_pending'").run(); checkpoint();
+    }
+  }
+
+  private encodeMetadata(key: string, value: unknown): string {
+    return this.metadataCodec ? encryptedMetadataPrefix + this.metadataCodec.encrypt({ key, value }) : JSON.stringify(value);
+  }
+  private decodeMetadata<T>(key: string, value: string): T {
+    if (!this.metadataCodec) {
+      if (value.startsWith(encryptedMetadataPrefix)) throw new Error('Protected runtime data is locked.');
+      return JSON.parse(value) as T;
+    }
+    if (!value.startsWith(encryptedMetadataPrefix)) throw new Error('Protected runtime data contains an unencrypted value.');
+    const decoded = this.metadataCodec.decrypt<{ key: string; value: T }>(value.slice(encryptedMetadataPrefix.length));
+    if (!decoded || typeof decoded !== 'object' || decoded.key !== key || !Object.hasOwn(decoded, 'value')) throw new Error('Protected runtime data is invalid.');
+    return decoded.value;
   }
 
   close() { this.db.close(); }
@@ -41,15 +92,15 @@ export class Store {
 
   getMeta<T = unknown>(key: string): T | null {
     const row = this.db.prepare('SELECT value FROM metadata WHERE key = ?').get(key) as { value: string } | undefined;
-    return row ? JSON.parse(row.value) as T : null;
+    return row ? this.decodeMetadata<T>(key, row.value) : null;
   }
   setMeta(key: string, value: unknown): void {
-    this.db.prepare('INSERT INTO metadata(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value));
+    this.db.prepare('INSERT INTO metadata(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, this.encodeMetadata(key, value));
   }
   deleteMeta(key: string): void { this.db.prepare('DELETE FROM metadata WHERE key = ?').run(key); }
   listMeta<T = unknown>(prefix: string): Array<{ key: string; value: T }> {
     const rows = this.db.prepare('SELECT key,value FROM metadata WHERE substr(key,1,?) = ? ORDER BY key').all(prefix.length, prefix) as Array<{ key: string; value: string }>;
-    return rows.map(row => ({ key: row.key, value: JSON.parse(row.value) as T }));
+    return rows.map(row => ({ key: row.key, value: this.decodeMetadata<T>(row.key, row.value) }));
   }
   listInboxes(): Inbox[] { return this.listMeta<Inbox>('inbox:').map(row => row.value); }
 

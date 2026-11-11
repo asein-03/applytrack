@@ -134,3 +134,23 @@ test('changing reminder preferences revokes outstanding delivery leases', async 
     await assert.rejects(() => f.service.acknowledge(null, fresh.id, { clientId: 'device-one', leaseId: fresh.leaseId }), /expired or changed/);
   } finally { f.store.close(); }
 });
+
+test('delivery validation requires the current account, client, lease and active deadline', async () => {
+  const f = await cloudFixture();
+  try {
+    const alice = f.cloud.actors.get('alice')!, bob = f.cloud.actors.get('bob')!;
+    const service = new ReminderService(f.store, { repository: f.repository, now: () => Date.parse('2026-11-10T16:00:00Z') });
+    await f.repository.run('personal', alice, true, store => {
+      const app = store.createApplication({ company: 'Private', role: 'Designer' });
+      store.createTask(app.id, { title: 'Assessment', dueAt: '2026-11-10T17:00:00Z' });
+    });
+    await service.preferences(alice, options);
+    const [delivery] = await service.claim(alice, { clientId: 'desktop-owner' });
+    const lease = { clientId: 'desktop-owner', leaseId: delivery.leaseId };
+    assert.equal((await service.validateDelivery(alice, delivery.id, lease))?.id, delivery.id);
+    assert.equal(await service.validateDelivery(bob, delivery.id, lease), null);
+    assert.equal(await service.validateDelivery(alice, delivery.id, { ...lease, clientId: 'other-client' }), null);
+    await service.snooze(alice, delivery.id, 60);
+    assert.equal(await service.validateDelivery(alice, delivery.id, lease), null);
+  } finally { await f.close(); }
+});
