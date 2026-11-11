@@ -1,0 +1,57 @@
+name: Desktop installers
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, feat/gmail-connection]
+permissions:
+  contents: read
+concurrency:
+  group: installers-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+            name: mac-apple-silicon
+          - os: macos-15-intel
+            arch: x64
+            name: mac-intel
+          - os: windows-2025
+            arch: x64
+            name: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+      APPLY_BUILD_ARCH: ${{ matrix.arch }}
+      APPLY_PACKAGE_SMOKE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Require the public cloud configuration
+        run: node -e "if(!process.env.SUPABASE_URL || !process.env.SUPABASE_PUBLISHABLE_KEY) throw new Error('Missing public cloud configuration')"
+      - run: npm run desktop:package
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: applytrack-${{ matrix.name }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: failure()
+        with:
+          name: desktop-test-${{ matrix.name }}
+          path: test-results/desktop/
+          retention-days: 3
