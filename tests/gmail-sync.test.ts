@@ -14,10 +14,10 @@ const resolver = async () => [[`v=DKIM1; k=rsa; p=${publicKey}`]];
 const now = new Date(); now.setMilliseconds(0);
 const date = now.toUTCString();
 const received = now.toISOString();
-const app = (extra: Partial<Application> = {}): Application => ({ id: 'app1', workspace: 'personal', company: 'Northstar', role: 'Data Analyst', stage: 'applied', url: 'https://jobs.northstar.example/data', jobId: '', email: 'candidate@example.com', recruiterEmail: 'hiring@northstar.example', notes: '', location: '', salary: '', jobType: '', workMode: '', description: '', contacts: '', appliedAt: received, createdAt: received, updatedAt: received, tasks: [], evidence: [], timeline: [], documents: [], ...extra } as Application);
+const app = (extra: Partial<Application> = {}): Application => ({ id: 'app1', workspace: 'personal', company: 'Northstar', role: 'Data Analyst', stage: 'applied', url: 'https://jobs.northstar.example/data', jobId: '', email: 'candidate@candidate.example', recruiterEmail: 'hiring@northstar.example', notes: '', location: '', salary: '', jobType: '', workMode: '', description: '', contacts: '', appliedAt: received, createdAt: received, updatedAt: received, tasks: [], evidence: [], timeline: [], documents: [], ...extra } as Application);
 async function signed(options: { body?: string; to?: string; domain?: string; from?: string; headers?: string[]; maxBodyLength?: number } = {}) {
   const body = options.body ?? 'Please complete your assessment. Deadline: 2026-11-16.';
-  const headers = [ ['From', options.from ?? 'Northstar Hiring <hiring@northstar.example>'], ['To', options.to ?? 'candidate@example.com'], ['Subject', 'Northstar Data Analyst application'], ['Date', date], ['Message-ID', '<unique-assessment@northstar.example>'], ['MIME-Version', '1.0'], ['Content-Type', 'text/plain; charset=utf-8'] ];
+  const headers = [ ['From', options.from ?? 'Northstar Hiring <hiring@northstar.example>'], ['To', options.to ?? 'candidate@candidate.example'], ['Subject', 'Northstar Data Analyst application'], ['Date', date], ['Message-ID', '<unique-assessment@northstar.example>'], ['MIME-Version', '1.0'], ['Content-Type', 'text/plain; charset=utf-8'] ];
   const source = `${headers.map(([name, value]) => `${name}: ${value}`).join('\r\n')}\r\n\r\n${body}\r\n`;
   const signature = await dkimSign(source, { headerList: options.headers ?? headers.map(([name]) => name), signatureData: [{ signingDomain: options.domain ?? 'northstar.example', selector: 'test', privateKey, ...(options.maxBodyLength === undefined ? {} : { maxBodyLength: options.maxBodyLength }) }] });
   assert.equal(signature.errors.length, 0);
@@ -25,7 +25,7 @@ async function signed(options: { body?: string; to?: string; domain?: string; fr
   const payload = { mimeType: 'text/plain', headers: headers.map(([name, value]) => ({ name, value })), body: { data: Buffer.from(body).toString('base64url') } };
   return { raw, payload };
 }
-const connection = (extra: Partial<GmailSyncConnection> = {}): GmailSyncConnection => ({ id: 'inbox1', userId: 'owner1', generation: 'generation1', email: 'candidate@example.com', connectedAt: received, lastSyncAt: null, syncAfter: new Date(now.getTime() - 30 * 86400000).toISOString(), ...emptyCursor(), ...extra });
+const connection = (extra: Partial<GmailSyncConnection> = {}): GmailSyncConnection => ({ id: 'inbox1', userId: 'owner1', generation: 'generation1', email: 'candidate@candidate.example', connectedAt: received, lastSyncAt: null, syncAfter: new Date(now.getTime() - 30 * 86400000).toISOString(), ...emptyCursor(), ...extra });
 function backend(applications = [app()]) {
   let state: WorkspaceState = { version: 1, applications, metadata: [], processed: [] }; let revision = 0;
   return { get state() { return state; }, readWorkspace: async () => ({ revision, state: structuredClone(state) }), commitWorkspace: async (expected: number, next: WorkspaceState) => { if (expected !== revision) return false; state = structuredClone(next); revision++; return true; } };
@@ -43,20 +43,20 @@ function requests(message: Awaited<ReturnType<typeof signed>>, ids = ['message1'
 
 test('DKIM verifies body and signed sender/recipient; fabricated authentication headers have no authority', async () => {
   const message = await signed();
-  const proof = await verifySender(message.raw, 'candidate@example.com', received, new AbortController().signal, resolver);
+  const proof = await verifySender(message.raw, 'candidate@candidate.example', received, new AbortController().signal, resolver);
   assert.equal(proof.verified, true);
   assert.equal(associatedSender(proof, app()), true);
   assert.equal(associatedSender(proof, app({ recruiterEmail: '', url: 'https://greenhouse.io/jobs/1' })), false);
   const forged = Buffer.from(message.raw.toString().replace('Please complete your assessment.', 'We are not moving forward.'));
-  assert.equal((await verifySender(forged, 'candidate@example.com', received, new AbortController().signal, resolver)).verified, false);
+  assert.equal((await verifySender(forged, 'candidate@candidate.example', received, new AbortController().signal, resolver)).verified, false);
   const unsigned = Buffer.from(`Authentication-Results: mx.google.com; dkim=pass; spf=pass\r\n${message.raw.toString().replace(/^DKIM-Signature:[\s\S]+?(?=From:)/, '')}`);
-  assert.equal((await verifySender(unsigned, 'candidate@example.com', received, new AbortController().signal, resolver)).verified, false);
+  assert.equal((await verifySender(unsigned, 'candidate@candidate.example', received, new AbortController().signal, resolver)).verified, false);
 });
 test('unsigned critical headers, body length limits, recipient replay, and duplicate From cannot authorize changes', async () => {
-  for (const message of [await signed({ headers: ['From', 'To', 'Date', 'Message-ID'] }), await signed({ maxBodyLength: 10 }), await signed({ to: 'another@example.com' }), await signed({ domain: 'evil.example' })]) assert.equal((await verifySender(message.raw, 'candidate@example.com', received, new AbortController().signal, resolver)).verified, false);
+  for (const message of [await signed({ headers: ['From', 'To', 'Date', 'Message-ID'] }), await signed({ maxBodyLength: 10 }), await signed({ to: 'another@candidate.example' }), await signed({ domain: 'evil.example' })]) assert.equal((await verifySender(message.raw, 'candidate@candidate.example', received, new AbortController().signal, resolver)).verified, false);
   const message = await signed();
-  assert.equal((await verifySender(Buffer.concat([Buffer.from('From: attacker@example.com\r\n'), message.raw]), 'candidate@example.com', received, new AbortController().signal, resolver)).verified, false);
-  assert.equal((await verifySender(new Uint8Array(MAX_RAW_BYTES + 1), 'candidate@example.com', received, new AbortController().signal, resolver)).verified, false);
+  assert.equal((await verifySender(Buffer.concat([Buffer.from('From: attacker@candidate.example\r\n'), message.raw]), 'candidate@candidate.example', received, new AbortController().signal, resolver)).verified, false);
+  assert.equal((await verifySender(new Uint8Array(MAX_RAW_BYTES + 1), 'candidate@candidate.example', received, new AbortController().signal, resolver)).verified, false);
   assert.equal(validDkimQuery('a._domainkey.northstar.example'), true);
   for (const query of ['https://evil.test', 'x._domainkey.localhost', 'x._domainkey.a..com', `${'a'.repeat(64)}._domainkey.example.com`]) assert.equal(validDkimQuery(query), false);
 });
@@ -154,10 +154,11 @@ test('oversized history pages fail without silently dropping message IDs', async
 });
 
 test('shared ATS sender addresses and DNS claims never establish employer tenancy', async () => {
-  const message = await signed({ domain: 'greenhouse.io', from: ['noreply', 'greenhouse.io'].join('@') });
-  const proof = await verifySender(message.raw, 'candidate@example.com', received, new AbortController().signal, resolver);
+  const sharedSender = ['synthetic-fixture', 'greenhouse.io'].join('@');
+  const message = await signed({ domain: 'greenhouse.io', from: sharedSender });
+  const proof = await verifySender(message.raw, 'candidate@candidate.example', received, new AbortController().signal, resolver);
   assert.equal(proof.verified, true);
-  assert.equal(associatedSender(proof, app({ recruiterEmail: ['noreply', 'greenhouse.io'].join('@'), url: 'https://boards.greenhouse.io/northstar' })), false);
+  assert.equal(associatedSender(proof, app({ recruiterEmail: sharedSender, url: 'https://boards.greenhouse.io/northstar' })), false);
   const original = globalThis.fetch; const calls: string[] = [];
   try {
     globalThis.fetch = async input => { calls.push(String(input)); return new Response(JSON.stringify({ Status: 0, Answer: [{ type: 16, data: '\"v=DKIM1; \" \"p=example\"' }] })); };
@@ -191,6 +192,6 @@ test('signed replay cannot duplicate an unmatched review item or cross an accoun
   const replay = await syncConnection(context(data, requests(message, ['replayed'])), { resolver });
   assert.equal(replay.queued, 0); assert.equal(data.state.metadata.filter(item => item.key.startsWith('email-review:')).length, 1);
   const other = backend();
-  await syncConnection(context(other, requests(message), connection({ email: 'someone-else@example.com', id: 'another-inbox', userId: 'other-owner' })), { resolver });
+  await syncConnection(context(other, requests(message), connection({ email: 'someone-else@candidate.example', id: 'another-inbox', userId: 'other-owner' })), { resolver });
   assert.equal(other.state.applications[0].stage, 'applied'); assert.equal(other.state.applications[0].tasks.length, 0);
 });

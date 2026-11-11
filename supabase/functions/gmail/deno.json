@@ -1,0 +1,20 @@
+{
+  "imports": {
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.119.0",
+    "mailauth/lib/dkim/verify": "npm:mailauth@8.0.6/lib/dkim/verify.js",
+    "tldts": "npm:tldts@7.4.19",
+    "mailauth/lib/dkim/sign": "npm:mailauth@8.0.6/lib/dkim/sign.js"
+  },
+  "compilerOptions": {
+    "strict": true
+  },
+  "nodeModulesDir": "none",
+  "lock": "deno.lock",
+  "minimumDependencyAge": {
+    "age": 1440,
+    "exclude": [
+      "npm:mailauth",
+      "npm:nodemailer"
+    ]
+  }
+}
