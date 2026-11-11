@@ -30,6 +30,18 @@ const FAILURE = /(?:application|submission)[^.!\n]{0,45}(?:failed|not (?:been )?
 const CONDITIONAL = /\b(?:if|once|when|after|until|unless|before|whether)\b[^.!?\n]{0,120}(?:your application|we(?:'ve| have) received|thank you for applying|application submitted)/i;
 const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
+export function createLocalOcrWorker(errorHandler?: (error: unknown) => void): Promise<Worker> {
+  const base = new URL(`${import.meta.env.BASE_URL}ocr/tesseract-6.0.1-core-6.1.2-eng-1.0.0/`, window.location.origin);
+  if (base.origin !== window.location.origin) throw new Error('Text recognition assets must be served by ApplyTrack.');
+  return createWorker('eng', 1, {
+    workerPath: new URL('worker.min.js', base).href,
+    corePath: new URL('core/', base).href,
+    langPath: new URL('lang/', base).href,
+    workerBlobURL: false, cacheMethod: 'none', gzip: true,
+    errorHandler,
+  });
+}
+
 /** Pure matching logic: never identify a role by company alone. */
 export function matchVisualConfirmation(text: string, applications: Application[]) {
   if (FAILURE.test(text) || CONDITIONAL.test(text)) return null;
@@ -166,21 +178,18 @@ export async function startCapture(options: CaptureOptions): Promise<CaptureCont
     await video.play();
     if (stopped) throw new Error('Screen sharing stopped before checks were ready.');
     status('Loading on-device text recognition.', 'starting');
-    // Tesseract downloads its worker/core and English language assets on first use.
-    // Recognition happens inside the browser. Images are never uploaded to its CDN.
+    // Worker, WASM and language data are bundled with the app; recognition stays on this device.
     let rejectInitialization: (reason: Error) => void = () => undefined;
     const failure = new Promise<never>((_resolve, reject) => { rejectInitialization = reject; });
     const cancelled = () => rejectInitialization(new Error('Screen sharing stopped before checks were ready.'));
     lifecycle.signal.addEventListener('abort', cancelled, { once: true });
-    const loading = createWorker('eng', 1, {
-      errorHandler: () => rejectInitialization(new Error('Text recognition could not load. Check your connection and try again.')),
-    });
+    const loading = createLocalOcrWorker(() => rejectInitialization(new Error('Text recognition could not load. Reopen ApplyTrack and try again.')));
     let initializationFailed = false;
     void loading.then(created => {
       if (stopped || initializationFailed) void created.terminate();
     }).catch(() => undefined);
     const initializationTimer = setTimeout(() => {
-      rejectInitialization(new Error('Text recognition took too long to load. Check your connection and try again.'));
+      rejectInitialization(new Error('Text recognition took too long to load. Reopen ApplyTrack and try again.'));
     }, 60_000);
     let createdWorker: Worker;
     try {

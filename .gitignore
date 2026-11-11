@@ -17,3 +17,7 @@ screenshots/
 
 supabase/.temp/
 supabase/.branches/
+desktop-dist/
+release/
+
+/public/ocr/

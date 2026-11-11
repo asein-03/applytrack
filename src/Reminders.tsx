@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArrowClockwise, Bell, BellSlash, CaretDown, Check, Clock, WarningCircle, X } from '@phosphor-icons/react';
 import type { Workspace } from '../shared/types';
-import { DEFAULT_REMINDER_PREFERENCES, type ReminderDelivery, type ReminderItem, type ReminderPreferences, type ReminderSnapshot } from '../shared/reminders';
+import { DEFAULT_REMINDER_PREFERENCES, PRIVATE_REMINDER_NOTIFICATION, type ReminderDelivery, type ReminderItem, type ReminderPreferences, type ReminderSnapshot } from '../shared/reminders';
 import { api } from './api';
 import './reminders.css';
 
@@ -82,7 +82,7 @@ export function useReminders({ workspace, desktop = false, onOpenApplication, no
           if (notifier) displayed = await notifier.notify(item);
           else displayed = await new Promise<boolean>(resolve => {
             let settled = false;
-            const notification = new Notification(item.title, { body: `${item.company} · ${item.role}\nDue ${deadlineLabel(item, snapshot.preferences.timeZone)}`, tag: item.id });
+            const notification = new Notification(PRIVATE_REMINDER_NOTIFICATION.title, { body: PRIVATE_REMINDER_NOTIFICATION.body, tag: item.id });
             notifications.current.add(notification);
             const finish = (shown: boolean) => { if (settled) return; settled = true; clearTimeout(timeout); resolve(shown); };
             const timeout = setTimeout(() => { notification.close(); finish(false); }, 8000);

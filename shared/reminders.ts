@@ -26,3 +26,8 @@ export interface ReminderSnapshot {
   serverTime: string;
 }
 export interface ReminderDelivery extends ReminderItem { leaseId: string; leaseExpiresAt: string; }
+
+export const PRIVATE_REMINDER_NOTIFICATION = {
+  title: 'Application deadline',
+  body: 'Open ApplyTrack to view your next task.',
+} as const;
