@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, ArrowUpRight, Briefcase, CaretRight, Check, CheckCircle, DownloadSimple, EnvelopeSimple, Flag, LinkSimple, MagnifyingGlass, Monitor, Plus, Record, ShieldCheck, SquaresFour, Stop, WarningCircle, X } from '@phosphor-icons/react';
+import { ArrowRight, ArrowUpRight, Briefcase, CaretRight, Check, CheckCircle, DownloadSimple, EnvelopeSimple, Files, Flag, LinkSimple, MagnifyingGlass, Monitor, Plus, Record, ShieldCheck, SquaresFour, Stop, WarningCircle, X } from '@phosphor-icons/react';
 import type { Application, Settings, Task, TrackingSession, Workspace } from '../shared/types';
 import { STAGES, STAGE_LABELS } from '../shared/types';
 import { api, apiBlob } from './api';
@@ -9,11 +9,16 @@ import { CompanyMark, dateLabel, EmptyState, isOverdue, Modal, relativeDate, Sta
 import ApplicationEditor from './ApplicationEditor';
 import ApplicationDetail from './ApplicationDetail';
 import Connections from './Connections';
+import Documents from './Documents';
+import { ReminderCenter, ReminderSettings, useReminders } from './Reminders';
+import DesktopSettings from './DesktopSettings';
+import type { DesktopCommand } from '../shared/desktop';
 
-type Page = 'overview' | 'applications' | 'tasks' | 'connections';
+type Page = 'overview' | 'applications' | 'documents' | 'tasks' | 'connections';
 const pages: { id: Page; label: string; icon: typeof SquaresFour }[] = [
   { id: 'overview', label: 'Overview', icon: SquaresFour },
   { id: 'applications', label: 'Applications', icon: Briefcase },
+  { id: 'documents', label: 'Documents', icon: Files },
   { id: 'tasks', label: 'Tasks', icon: CheckCircle },
   { id: 'connections', label: 'Connections', icon: LinkSimple },
 ];
@@ -40,7 +45,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const applicationOpener = useRef<HTMLElement | null>(null);
   const [editor, setEditor] = useState<Application | 'new' | null>(null);
-  const [taskView, setTaskView] = useState<'upcoming' | 'completed'>('upcoming');
+  const [taskView, setTaskView] = useState<'upcoming' | 'completed' | 'reminders'>('upcoming');
   const [taskBusy, setTaskBusy] = useState('');
   const [exporting, setExporting] = useState(false);
   const [toast, setToast] = useState<{ message: string; error: boolean } | null>(null);
@@ -56,6 +61,19 @@ export default function App() {
   const appLifecycle = useRef<AbortController | null>(null);
   const sessionActive = !!settings?.session && !settings.session.stoppedAt;
   const screenActive = captureStatus?.state === 'capturing';
+  const reminders = useReminders({ workspace, desktop: !!window.applyDesktop, onOpenApplication: id => openApplication(id) });
+  const pendingDesktopApplication = useRef<string | null>(null);
+  const desktopCommand = useRef<(value: DesktopCommand) => void>(() => undefined);
+  desktopCommand.current = value => {
+    if (value.type === 'stop-tracking') { void stopTracking(); return; }
+    if (value.type === 'start-tracking') { if (workspace === 'demo') switchWorkspace('personal'); setTrackingError(''); setTrackingOpen(true); return; }
+    if (value.type === 'show-tasks') { navigate('tasks'); return; }
+    if (value.type === 'open-application') {
+      if (workspace === 'demo') { pendingDesktopApplication.current = value.applicationId; switchWorkspace('personal'); return; }
+      openApplication(value.applicationId);
+    }
+  };
+  useEffect(() => window.applyDesktop?.onCommand(value => desktopCommand.current(value)), []);
 
   const notify = useCallback((message: string, error = false) => {
     setToast({ message, error });
@@ -98,6 +116,13 @@ export default function App() {
     window.addEventListener('pagehide', stopOnLeave);
     return () => window.removeEventListener('pagehide', stopOnLeave);
   }, [sessionActive]);
+  const applicationRevision = applications.map(value => `${value.id}:${value.updatedAt}`).join('|');
+  useEffect(() => { if (!loading) void reminders.refresh(); }, [applicationRevision, loading]);
+  useEffect(() => {
+    if (workspace === 'personal' && !loading && pendingDesktopApplication.current) {
+      openApplication(pendingDesktopApplication.current); pendingDesktopApplication.current = null;
+    }
+  }, [workspace, loading]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.has('connected') || params.has('connection')) { setPage('connections'); const connected = params.get('connected') === 'gmail'; notify(connected ? 'Gmail connected.' : params.get('connection') === 'cancelled' ? 'Gmail connection cancelled.' : 'Gmail connection needs attention.', !connected); window.history.replaceState({}, '', window.location.pathname); }
@@ -238,8 +263,8 @@ export default function App() {
       { label: 'No deadline', entries: visible.filter(({ task }) => !task.dueAt) },
     ];
     return <section className="tasks-section">
-      <div className="tasks-toolbar"><div className="segmented-control" aria-label="Task view"><button className={taskView === 'upcoming' ? 'active' : ''} aria-pressed={taskView === 'upcoming'} onClick={() => setTaskView('upcoming')}>Upcoming<span>{pendingTasks.length}</span></button><button className={taskView === 'completed' ? 'active' : ''} aria-pressed={taskView === 'completed'} onClick={() => setTaskView('completed')}>Completed<span>{allTasks.length - pendingTasks.length}</span></button></div><span className="muted">Sorted by deadline</span></div>
-      {visible.length ? groups.filter(group => group.entries.length).map(group => <section className="task-group" key={group.label}><div className="task-group-heading"><h2>{group.label}</h2><span>{group.entries.length}</span></div><div className="task-list">{group.entries.map(({ task, application }) => <TaskRow key={task.id} task={task} application={application} onToggle={toggleTask} onOpen={() => openApplication(application.id)} busy={taskBusy === task.id} />)}</div></section>) : <EmptyState icon={<CheckCircle size={32} weight="light" />} title={taskView === 'completed' ? 'No completed tasks yet' : 'No upcoming tasks'} description={taskView === 'completed' ? 'Your completed assessments and follow-ups will appear here.' : 'Add a task from an application, or connect an inbox to find next steps.'}><button className="button secondary" onClick={() => navigate('applications')}>View applications</button></EmptyState>}
+      <div className="tasks-toolbar"><div className="segmented-control" aria-label="Task view"><button className={taskView === 'upcoming' ? 'active' : ''} aria-pressed={taskView === 'upcoming'} onClick={() => setTaskView('upcoming')}>Upcoming<span>{pendingTasks.length}</span></button><button className={taskView === 'completed' ? 'active' : ''} aria-pressed={taskView === 'completed'} onClick={() => setTaskView('completed')}>Completed<span>{allTasks.length - pendingTasks.length}</span></button>{workspace === 'personal' && <button className={taskView === 'reminders' ? 'active' : ''} aria-pressed={taskView === 'reminders'} onClick={() => setTaskView('reminders')}>Reminders</button>}</div>{taskView !== 'reminders' && <span className="muted">Sorted by deadline</span>}</div>
+      {taskView === 'reminders' && workspace === 'personal' ? <ReminderCenter model={reminders} onOpenApplication={id => openApplication(id)} /> : visible.length ? groups.filter(group => group.entries.length).map(group => <section className="task-group" key={group.label}><div className="task-group-heading"><h2>{group.label}</h2><span>{group.entries.length}</span></div><div className="task-list">{group.entries.map(({ task, application }) => <TaskRow key={task.id} task={task} application={application} onToggle={toggleTask} onOpen={() => openApplication(application.id)} busy={taskBusy === task.id} />)}</div></section>) : <EmptyState icon={<CheckCircle size={32} weight="light" />} title={taskView === 'completed' ? 'No completed tasks yet' : 'No upcoming tasks'} description={taskView === 'completed' ? 'Your completed assessments and follow-ups will appear here.' : 'Add a task from an application, or connect an inbox to find next steps.'}><button className="button secondary" onClick={() => navigate('applications')}>View applications</button></EmptyState>}
     </section>;
   }
 
@@ -247,7 +272,7 @@ export default function App() {
   const nextStep = pendingTasks[0];
   const pageDescription = page === 'overview'
     ? `${activeApplications.length} active ${activeApplications.length === 1 ? 'application' : 'applications'}. ${attentionCount} ${attentionCount === 1 ? 'item needs' : 'items need'} your attention.`
-    : page === 'applications' ? 'Every role and its next step.' : page === 'tasks' ? 'Your assessments, interviews and follow-ups.' : 'Browser tracking and email accounts.';
+    : page === 'applications' ? 'Every role and its next step.' : page === 'documents' ? 'Your résumé versions and where you used them.' : page === 'tasks' ? 'Your assessments, interviews and follow-ups.' : 'Browser tracking, notifications and email accounts.';
 
   return <div className="app-shell">
     <a className="skip-link" href="#main-content">Skip to main content</a>
@@ -262,9 +287,9 @@ export default function App() {
       </header>
       <main className={`main-content page-${page}`} id="main-content" tabIndex={-1}>
         {workspace === 'demo' && <div className="demo-banner"><span><strong>Demo workspace</strong><span>These are sample applications.</span></span><button onClick={() => switchWorkspace('personal')}>Go to my workspace<ArrowRight size={14} /></button></div>}
-        <div className="page-heading"><div><h1>{pages.find(item => item.id === page)?.label}</h1><p className="page-description">{applications.length || page === 'connections' || page === 'tasks' ? pageDescription : 'Your job search starts here.'}</p></div>{page !== 'connections' && <button className="button secondary add-application" onClick={event => { applicationOpener.current = event.currentTarget; setEditor('new'); }}><Plus size={18} />Add application</button>}</div>
+        <div className="page-heading"><div><h1>{pages.find(item => item.id === page)?.label}</h1><p className="page-description">{applications.length || ['connections', 'tasks', 'documents'].includes(page) ? pageDescription : 'Your job search starts here.'}</p></div>{!['connections', 'documents'].includes(page) && <button className="button secondary add-application" onClick={event => { applicationOpener.current = event.currentTarget; setEditor('new'); }}><Plus size={18} />Add application</button>}</div>
         {loadError && <div className="error-banner" role="alert"><WarningCircle size={21} /><div><strong>Could not load your workspace</strong><p>{loadError}</p></div><button className="button secondary small" onClick={() => void refresh()}>Try again</button></div>}
-        {loading ? <div className="loading-layout" aria-label="Loading applications" aria-busy="true"><div className="skeleton skeleton-stats" /><div className="skeleton skeleton-heading" />{Array.from({ length: 5 }, (_, index) => <div className="skeleton skeleton-row" key={index} />)}</div> : page === 'connections' ? <Connections settings={settings} applications={applications} workspace={workspace} onChange={() => void refresh()} notify={notify} /> : applicationsUnavailable && !applications.length ? <div className="unavailable-state"><Briefcase size={36} weight="light" /><p>Your applications are unavailable. Try again shortly.</p></div> : <>
+        {loading ? <div className="loading-layout" aria-label="Loading applications" aria-busy="true"><div className="skeleton skeleton-stats" /><div className="skeleton skeleton-heading" />{Array.from({ length: 5 }, (_, index) => <div className="skeleton skeleton-row" key={index} />)}</div> : page === 'connections' ? <Connections settings={settings} applications={applications} workspace={workspace} onChange={() => void refresh()} notify={notify} additionalSettings={<><ReminderSettings model={reminders} /><DesktopSettings /></>} /> : page === 'documents' ? <Documents workspace={workspace} onOpenApplication={id => openApplication(id)} refreshKey={applications.map(item => `${item.id}:${item.updatedAt}`).join('|')} /> : applicationsUnavailable && !applications.length ? <div className="unavailable-state"><Briefcase size={36} weight="light" /><p>Your applications are unavailable. Try again shortly.</p></div> : <>
           {unmatchedEmailCount > 0 && !applications.length && <div className="unmatched-note"><EnvelopeSimple size={20} /><span>{unmatchedEmailCount} {unmatchedEmailCount === 1 ? 'email needs' : 'emails need'} an application.</span><button className="text-button" onClick={() => navigate('connections')}>Review emails<ArrowRight size={14} /></button></div>}
           {page === 'tasks' ? renderTasks() : !applications.length ? <section className="first-run">
             <EmptyState icon={<Briefcase size={36} weight="light" />} title="Track your first application" description="Add an application, or turn on tracking before you apply."><button className="button primary" onClick={event => { applicationOpener.current = event.currentTarget; setEditor('new'); }}><Plus size={18} />Add application</button><button className="button secondary" onClick={() => switchWorkspace('demo')}>Explore demo</button></EmptyState>
@@ -284,7 +309,7 @@ export default function App() {
     </div>
     {selected && <ApplicationDetail key={selected.id} application={selected} onClose={() => setSelectedId(null)} onRestoreFocus={() => (applicationOpener.current?.isConnected ? applicationOpener.current : document.getElementById('main-content'))?.focus()} onChange={() => void refresh()} onEdit={() => setEditor(selected)} onDelete={() => void deleteApplication()} onTaskToggle={toggleTask} onError={message => notify(message, true)} />}
     {editor && <ApplicationEditor application={editor === 'new' ? undefined : editor} workspace={workspace} onClose={() => setEditor(null)} onSaved={application => { setEditor(null); setSelectedId(application.id); void refresh(); notify(editor === 'new' ? 'Application added.' : 'Application updated.'); }} />}
-    <Modal open={trackingOpen} onClose={() => { if (!trackingBusy) setTrackingOpen(false); }} title="Start tracking" description="Keep this dashboard open while you apply.">
+    <Modal open={trackingOpen} onClose={() => { if (!trackingBusy) setTrackingOpen(false); }} title="Start tracking" description={window.applyDesktop ? 'ApplyTrack can keep running in your menu bar while you apply.' : 'Keep this dashboard open while you apply.'}>
       <div className="modal-body tracking-body"><div className="tracking-option"><span className="setup-icon"><LinkSimple size={23} /></span><div><strong>Browser tracking</strong><p>Capture job details and submission confirmations with the paired extension.</p></div><Check size={19} /></div><label className="tracking-option screen-option"><span className="setup-icon"><Monitor size={23} /></span><span><strong>Screen confirmation</strong><span className="option-description">Check the browser window or tab you choose for a second confirmation.</span></span><input type="checkbox" role="switch" checked={screenEnabled} onChange={event => setScreenEnabled(event.target.checked)} /></label><div className="capture-note"><ShieldCheck size={18} /><p>{account.enabled ? 'Screen analysis runs on this computer. Matched confirmation snapshots and job details are saved to your account.' : 'Screen analysis runs on this computer. Confirmation snapshots are saved in this test workspace.'}</p></div>{captureStatus?.state === 'starting' && <p className="capture-progress" role="status">{captureStatus.message}</p>}{trackingError && <p className="form-error" role="alert">{trackingError}</p>}</div>
       <div className="modal-footer"><button className="button secondary" onClick={() => setTrackingOpen(false)} disabled={trackingBusy}>Cancel</button><button className="button primary" onClick={() => void beginTracking()} disabled={trackingBusy}><Record size={17} />{trackingBusy ? 'Starting…' : screenEnabled ? 'Choose screen and start' : 'Start session'}</button></div>
     </Modal>
