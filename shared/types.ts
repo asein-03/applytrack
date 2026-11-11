@@ -50,6 +50,7 @@ export interface Inbox {
 export interface GmailStatus {
   gmailConfigured: boolean; inboxes: Inbox[]; gmailSyncMode?: 'cloud' | 'local'; gmailStatusError?: string | null;
 }
+export interface GmailDisconnectResult { disconnected: true; revocationPending?: boolean; }
 export interface GmailSyncResult { syncing?: boolean; imported?: number; queued?: number; processed?: number; more?: boolean; }
 export interface Settings extends GmailStatus {
   extensionToken: string;

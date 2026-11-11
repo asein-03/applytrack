@@ -272,7 +272,7 @@ export function attachEmailRoutes(app: Express, store: Store, options: { dataDir
   app.delete('/api/inboxes/:id', async (req, res) => {
     const actor = await actorFor(req); const runtime = runtimeFor(actor);
     const id = String(req.params.id);
-    if (options.cloud?.enabled && actor) { await cloudGmail(options.cloud).disconnect(actor, id); res.sendStatus(204); return; }
+    if (options.cloud?.enabled && actor) { res.json(await cloudGmail(options.cloud).disconnect(actor, id)); return; }
     if (!runtime.getMeta(`inbox:${id}`)) throw new HttpError(404, 'Inbox not found.');
     const encrypted = runtime.getMeta<string>(`inbox-token:${id}`);
     runtime.deleteMeta(`inbox:${id}`); runtime.deleteMeta(`inbox-token:${id}`);

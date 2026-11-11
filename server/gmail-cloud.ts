@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { GmailStatus, GmailSyncResult } from '../shared/types.js';
+import type { GmailStatus, GmailSyncResult, GmailDisconnectResult } from '../shared/types.js';
 import type { CloudActor, CloudService } from './cloud.js';
 import { HttpError } from './store.js';
 
@@ -9,7 +9,7 @@ const inboxSchema = z.object({
   connectedAt: z.iso.datetime({ offset: true }).optional(), syncing: z.boolean().optional(), error: z.string().max(1000).nullable().optional(),
 });
 const statusSchema = z.object({ gmailConfigured: z.boolean(), inboxes: z.array(inboxSchema).max(50) });
-const syncSchema = z.object({ syncing: z.boolean().optional(), imported: z.number().int().nonnegative().optional(), queued: z.number().int().nonnegative().optional(), processed: z.number().int().nonnegative().optional(), more: z.boolean().optional() });
+const syncSchema = z.object({ syncing: z.literal(true) });
 export function googleAuthorizationUrl(value: unknown): string {
   if (typeof value !== 'string' || value.length > 12000) throw new HttpError(502, 'Gmail returned an invalid connection link. Try again.');
   let url: URL; try { url = new URL(value); } catch { throw new HttpError(502, 'Gmail returned an invalid connection link. Try again.'); }
@@ -66,7 +66,7 @@ export class CloudGmail {
   }
   async connect(actor: CloudActor, inboxId?: string) { const result = await this.action(actor, 'connect', inboxId) as { url?: unknown }; return { url: googleAuthorizationUrl(result?.url) }; }
   async sync(actor: CloudActor, inboxId: string): Promise<GmailSyncResult> { const result = syncSchema.safeParse(await this.action(actor, 'sync', inboxId)); if (!result.success) throw new HttpError(502, 'Gmail returned an invalid sync response. Try again.'); this.invalidate(actor.id); return result.data; }
-  async disconnect(actor: CloudActor, inboxId: string): Promise<void> { await this.action(actor, 'disconnect', inboxId); this.invalidate(actor.id); }
+  async disconnect(actor: CloudActor, inboxId: string): Promise<GmailDisconnectResult> { const result = z.object({ disconnected: z.literal(true), revocationPending: z.boolean().optional() }).safeParse(await this.action(actor, 'disconnect', inboxId)); if (!result.success) throw new HttpError(502, 'Gmail returned an invalid disconnection response. Check the connection status.'); this.invalidate(actor.id); return result.data; }
 }
 const clients = new WeakMap<CloudService, CloudGmail>();
 export function cloudGmail(cloud: CloudService) { let client = clients.get(cloud); if (!client) { client = new CloudGmail(cloud); clients.set(cloud, client); } return client; }

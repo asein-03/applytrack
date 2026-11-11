@@ -125,7 +125,7 @@ export default function App() {
   }, [workspace, loading]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.has('connected') || params.has('connection')) { setPage('connections'); const connected = params.get('connected') === 'gmail'; notify(connected ? 'Gmail connected.' : params.get('connection') === 'cancelled' ? 'Gmail connection cancelled.' : 'Gmail connection needs attention.', !connected); window.history.replaceState({}, '', window.location.pathname); }
+    if (params.has('connected') || params.has('connection')) { setPage('connections'); const connected = params.get('connected') === 'gmail'; notify(connected ? 'Gmail connected.' : params.get('connection') === 'cancelled' ? 'Gmail connection cancelled.' : 'Gmail connection needs attention.', !connected); void refresh(); window.history.replaceState({}, '', window.location.pathname); }
   }, [notify]);
 
   const allTasks = useMemo(() => applications.flatMap(application => application.tasks.map(task => ({ task, application }))).sort((a, b) => (a.task.dueAt ? new Date(a.task.dueAt).getTime() : Infinity) - (b.task.dueAt ? new Date(b.task.dueAt).getTime() : Infinity)), [applications]);
@@ -251,7 +251,7 @@ export default function App() {
         </div> : <div className="attention-clear"><CheckCircle size={26} weight="light" /><strong>You're up to date</strong><span>New tasks and updates will appear here.</span></div>}
         {pendingTasks.length > 0 && <button className="rail-footer text-button" onClick={() => navigate('tasks')}>View tasks<ArrowRight size={15} /></button>}
       </section>
-      <button className="connection-summary" onClick={() => navigate('connections')}><span className="connection-summary-icon"><EnvelopeSimple size={21} /></span><span><strong>{settings?.inboxes.length ? `${settings.inboxes.length} ${settings.inboxes.length === 1 ? 'inbox connected' : 'inboxes connected'}` : 'Connect your inbox'}</strong><span>{settings?.inboxes.some(inbox => inbox.status === 'error') ? 'A connection needs attention' : settings?.inboxes.length ? 'Manage email updates' : 'Bring responses into your tracker'}</span></span><ArrowUpRight size={17} /></button>
+      <button className="connection-summary" onClick={() => navigate('connections')}><span className="connection-summary-icon"><EnvelopeSimple size={21} /></span><span><strong>{settings?.inboxes.length ? `${settings.inboxes.length} ${settings.inboxes.length === 1 ? 'inbox connected' : 'inboxes connected'}` : 'Connect your inbox'}</strong><span>{settings?.inboxes.some(inbox => inbox.status !== 'connected') ? 'A connection needs attention' : settings?.inboxes.length ? 'Manage email updates' : 'Bring responses into your tracker'}</span></span><ArrowUpRight size={17} /></button>
     </aside>;
   }
 

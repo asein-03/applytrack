@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowClockwise, CaretDown, CaretRight, Check, Cloud, Copy, DownloadSimple, EnvelopeSimple, FileText, LinkSimple, Plus, SignOut, Trash, UserCircle, WarningCircle } from '@phosphor-icons/react';
-import type { Application, Settings, Workspace } from '../shared/types';
+import type { Application, GmailStatus, GmailSyncResult, GmailDisconnectResult, Inbox, Settings, Workspace } from '../shared/types';
 import { api } from './api';
 import { useCloudAccount } from './AuthGate';
 import { dateLabel, Modal } from './ui';
 import './connections.css';
 
+interface PendingGmail { startedAt: number; inboxId?: string; previous: Map<string, Inbox>; url: string; }
 interface ReviewItem { id: string; subject: string; from: string; body: string; receivedAt: string; workspace: Workspace; kind: string; }
 
 function syncLabel(value: string | null) {
@@ -37,6 +38,61 @@ export default function Connections({ settings, applications, workspace, onChang
   const [reviewLoading, setReviewLoading] = useState(true);
   const reviewRequest = useRef(0);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [gmail, setGmail] = useState<GmailStatus | null>(null);
+  const [statusError, setStatusError] = useState('');
+  const [connectionMessage, setConnectionMessage] = useState('');
+  const [pending, setPending] = useState<PendingGmail | null>(null);
+  const pendingRef = useRef<PendingGmail | null>(null);
+  const syncPending = useRef<{ id: string; lastSyncAt: string | null; startedAt: number } | null>(null);
+  const [syncingId, setSyncingId] = useState('');
+  const lifecycle = useRef<AbortController | null>(null);
+  const statusRequest = useRef<AbortController | null>(null);
+  const lastStatusCheck = useRef(0);
+  const popup = useRef<Window | null>(null);
+  const onChangeRef = useRef(onChange); onChangeRef.current = onChange;
+  const connection = gmail ?? settings;
+  const inboxes = connection?.inboxes ?? [];
+  const hosted = connection?.gmailSyncMode === 'cloud' || settings?.cloud?.enabled;
+  const rememberPending = (value: PendingGmail | null) => { pendingRef.current = value; setPending(value); };
+
+  async function loadGmailStatus() {
+    if (workspace !== 'personal' || lifecycle.current?.signal.aborted) return;
+    statusRequest.current?.abort(); const controller = new AbortController(); statusRequest.current = controller;
+    const signal = lifecycle.current ? AbortSignal.any([lifecycle.current.signal, controller.signal]) : controller.signal;
+    lastStatusCheck.current = Date.now();
+    try {
+      const result = await api<GmailStatus>('/inboxes', { signal });
+      if (signal.aborted) return;
+      setGmail(result); setStatusError(result.gmailStatusError ?? '');
+      const waiting = pendingRef.current;
+      if (waiting && !result.gmailStatusError) {
+        const connected = result.inboxes.find(inbox => {
+          if (inbox.status !== 'connected' || (waiting.inboxId && inbox.id !== waiting.inboxId)) return false;
+          const before = waiting.previous.get(inbox.id);
+          return !before || before.status !== 'connected' || (!!inbox.connectedAt && inbox.connectedAt !== before.connectedAt);
+        });
+        if (connected) { rememberPending(null); popup.current = null; setConnectionMessage('Gmail connected. Application updates will appear here.'); onChangeRef.current(); void loadReview(signal); }
+      }
+      const syncing = syncPending.current;
+      if (syncing) {
+        const inbox = result.inboxes.find(inbox => inbox.id === syncing.id);
+        if (inbox?.status === 'reconnect_required' || inbox?.status === 'error') { syncPending.current = null; setSyncingId(''); setActionError(inbox.error || 'The inbox check failed. Try again.'); }
+        else if (inbox && inbox.lastSyncAt !== syncing.lastSyncAt && !inbox.syncing) { syncPending.current = null; setSyncingId(''); setConnectionMessage('Inbox check complete.'); onChangeRef.current(); void loadReview(signal); }
+      }
+    } catch (error) { if (!signal.aborted) setStatusError(error instanceof Error ? error.message : 'Could not check Gmail connections.'); }
+  }
+  useEffect(() => {
+    const controller = new AbortController(); lifecycle.current = controller;
+    rememberPending(null); syncPending.current = null; setSyncingId(''); setGmail(null); setStatusError(''); setActionError(''); setConnectionMessage(''); setBusy('');
+    void loadGmailStatus();
+    const focus = () => { void loadGmailStatus(); }; window.addEventListener('focus', focus);
+    const timer = setInterval(() => {
+      if (pendingRef.current && Date.now() - pendingRef.current.startedAt > 600000) { rememberPending(null); setActionError('Google approval was not completed. Start Connect Gmail again when you are ready.'); }
+      if (syncPending.current && Date.now() - syncPending.current.startedAt > 120000) { syncPending.current = null; setSyncingId(''); setConnectionMessage('The inbox check is continuing in the cloud. Updates will appear when it finishes.'); }
+      if (pendingRef.current || syncPending.current || Date.now() - lastStatusCheck.current >= 30000) void loadGmailStatus();
+    }, 3000);
+    return () => { controller.abort(); statusRequest.current?.abort(); clearInterval(timer); window.removeEventListener('focus', focus); pendingRef.current = null; syncPending.current = null; if (popup.current && !popup.current.closed) popup.current.close(); popup.current = null; };
+  }, [workspace, account.email]);
 
   async function loadReview(signal?: AbortSignal) {
     const request = ++reviewRequest.current;
@@ -62,22 +118,43 @@ export default function Connections({ settings, applications, workspace, onChang
   }, [workspace]);
   useEffect(() => () => clearTimeout(copiedTimer.current), []);
 
-  async function connect() {
-    setBusy('connect'); setActionError('');
+  async function connect(inboxId?: string) {
+    if (workspace !== 'personal' || !connection?.gmailConfigured) return;
+    setBusy('connect'); setActionError(''); setConnectionMessage('');
+    const signal = lifecycle.current?.signal;
+    const isHosted = hosted;
+    if (isHosted && !window.applyDesktop) { popup.current = window.open('about:blank', '_blank'); if (popup.current) popup.current.opener = null; }
+    const authWindow = popup.current;
     try {
-      const result = await api<{ url: string }>('/inboxes/google/connect', { method: 'POST' });
-      window.location.assign(result.url);
-    } catch (error) { setActionError(error instanceof Error ? error.message : 'Could not connect Gmail.'); }
-    finally { setBusy(''); }
+      const result = await api<{ url: string }>('/inboxes/google/connect', { method: 'POST', body: JSON.stringify(inboxId ? { inboxId } : {}), signal });
+      if (signal?.aborted) return;
+      const url = new URL(result.url);
+      if (url.protocol !== 'https:' || url.hostname !== 'accounts.google.com' || url.username || url.password || url.port) throw new Error('Google returned an invalid connection link. Try again.');
+      if (!isHosted) { window.location.assign(url.href); return; }
+      rememberPending({ startedAt: Date.now(), inboxId, previous: new Map(inboxes.map(inbox => [inbox.id, inbox])), url: url.href });
+      if (window.applyDesktop) window.open(url.href, '_blank', 'noopener,noreferrer');
+      else if (authWindow && !authWindow.closed) authWindow.location.href = url.href;
+    } catch (error) { if (!signal?.aborted) setActionError(error instanceof Error ? error.message : 'Could not connect Gmail.'); if (authWindow && !authWindow.closed) authWindow.close(); if (popup.current === authWindow) popup.current = null; }
+    finally { if (!signal?.aborted) setBusy(''); }
   }
+  function cancelConnection() { rememberPending(null); if (popup.current && !popup.current.closed) popup.current.close(); popup.current = null; setConnectionMessage('Connection check stopped. You can connect Gmail again at any time.'); }
   async function inboxAction(id: string, action: 'sync' | 'disconnect') {
-    setBusy(`${action}:${id}`); setActionError('');
+    if (workspace !== 'personal') return;
+    setBusy(`${action}:${id}`); setActionError(''); setConnectionMessage('');
+    const signal = lifecycle.current?.signal;
     try {
-      await api(`/inboxes/${id}${action === 'sync' ? '/sync' : ''}`, { method: action === 'sync' ? 'POST' : 'DELETE' });
-      notify(action === 'sync' ? 'Inbox checked for updates.' : 'Inbox disconnected.');
-      onChange(); await loadReview();
-    } catch (error) { setActionError(error instanceof Error ? error.message : 'Could not update inbox.'); }
-    finally { setBusy(''); }
+      const result = await api<(GmailSyncResult & Partial<GmailDisconnectResult>) | undefined>(`/inboxes/${id}${action === 'sync' ? '/sync' : ''}`, { method: action === 'sync' ? 'POST' : 'DELETE', signal });
+      if (signal?.aborted) return;
+      if (action === 'sync' && result?.syncing) {
+        syncPending.current = { id, lastSyncAt: inboxes.find(inbox => inbox.id === id)?.lastSyncAt ?? null, startedAt: Date.now() }; setSyncingId(id); setConnectionMessage('Inbox check started. You can keep using ApplyTrack.');
+      } else {
+        if (syncPending.current?.id === id) { syncPending.current = null; setSyncingId(''); }
+        setConnectionMessage(action === 'disconnect' ? result?.revocationPending ? 'Gmail disconnected. Google access removal is still being retried.' : 'Gmail disconnected.' : 'Inbox checked for updates.');
+        onChangeRef.current(); await loadReview(signal);
+      }
+      await loadGmailStatus();
+    } catch (error) { if (!signal?.aborted) { setActionError(error instanceof Error ? error.message : 'Could not update inbox.'); void loadGmailStatus(); } }
+    finally { if (!signal?.aborted) setBusy(''); }
   }
   async function importEmail(event: FormEvent) {
     event.preventDefault();
@@ -118,17 +195,21 @@ export default function Connections({ settings, applications, workspace, onChang
     <section className="cn-section" aria-labelledby="email-accounts-heading">
       <div className="cn-section-heading"><div><h2 id="email-accounts-heading">Email accounts</h2><p>Keep responses and next steps with the right application.</p></div><EnvelopeSimple size={22} aria-hidden="true" /></div>
       <div className="cn-group">
-        {!settings ? <div className="cn-loading" role="status"><span className="cn-skeleton cn-skeleton-icon" /><div><span className="cn-skeleton cn-skeleton-title" /><span className="cn-skeleton cn-skeleton-text" /></div><span className="sr-only">Loading email connections</span></div> : settings.inboxes.length ? settings.inboxes.map(inbox => <div className="cn-inbox-row" key={inbox.id}>
+        {!connection ? <div className="cn-loading" role="status"><span className="cn-skeleton cn-skeleton-icon" /><div><span className="cn-skeleton cn-skeleton-title" /><span className="cn-skeleton cn-skeleton-text" /></div><span className="sr-only">Loading email connections</span></div> : inboxes.length ? inboxes.map(inbox => <div className="cn-inbox-row" key={inbox.id}>
           <span className="cn-provider" aria-hidden="true">G</span>
-          <div className="cn-inbox-copy"><strong>{inbox.email}</strong><span className={inbox.status === 'error' ? 'cn-error-copy' : ''}>{inbox.status === 'error' ? inbox.error || 'Reconnect this account to check for updates.' : syncLabel(inbox.lastSyncAt)}</span></div>
-          <span className={`cn-health${inbox.status === 'error' ? ' cn-health-error' : ''}`}>{inbox.status === 'error' ? <WarningCircle size={14} /> : <span className="cn-health-dot" />}{inbox.status === 'error' ? 'Needs attention' : 'Connected'}</span>
-          <div className="cn-row-actions"><button className="button secondary small" onClick={() => void inboxAction(inbox.id, 'sync')} disabled={!!busy} aria-label={`Sync ${inbox.email}`}><ArrowClockwise size={15} />{busy === `sync:${inbox.id}` ? 'Checking…' : 'Sync'}</button><button className="cn-disconnect icon-button" aria-label={`Disconnect ${inbox.email}`} title="Disconnect account" onClick={() => void inboxAction(inbox.id, 'disconnect')} disabled={!!busy}><Trash size={17} /></button></div>
+          <div className="cn-inbox-copy"><strong>{inbox.email}</strong><span className={inbox.status !== 'connected' ? 'cn-error-copy' : ''}>{inbox.status !== 'connected' ? inbox.error || 'Reconnect this account to check for updates.' : inbox.syncing || syncingId === inbox.id ? 'Checking Gmail for application updates…' : syncLabel(inbox.lastSyncAt)}</span></div>
+          <span className={`cn-health${inbox.status !== 'connected' ? ' cn-health-error' : ''}`}>{inbox.status !== 'connected' ? <WarningCircle size={14} /> : <span className="cn-health-dot" />}{inbox.status !== 'connected' ? 'Needs attention' : 'Connected'}</span>
+          <div className="cn-row-actions">{inbox.status === 'reconnect_required' ? <button className="button secondary small" onClick={() => void connect(inbox.id)} disabled={!!busy || !!pending || workspace !== 'personal'} aria-label={`Reconnect ${inbox.email}`}>Reconnect</button> : <button className="button secondary small" onClick={() => void inboxAction(inbox.id, 'sync')} disabled={!!busy || !!inbox.syncing || syncingId === inbox.id || workspace !== 'personal'} aria-label={`Sync ${inbox.email}`}><ArrowClockwise size={15} />{busy === `sync:${inbox.id}` || inbox.syncing || syncingId === inbox.id ? 'Checking…' : 'Sync'}</button>}<button className="cn-disconnect icon-button" aria-label={`Disconnect ${inbox.email}`} title="Disconnect account" onClick={() => void inboxAction(inbox.id, 'disconnect')} disabled={!!busy || workspace !== 'personal'}><Trash size={17} /></button></div>
         </div>) : <div className="cn-inbox-row cn-empty-inbox"><span className="cn-provider" aria-hidden="true"><EnvelopeSimple size={21} /></span><div className="cn-inbox-copy"><strong>No inbox connected</strong><span>Connect Gmail or import an email to add updates.</span></div><span className="cn-health cn-health-neutral">Not connected</span></div>}
-        <div className="cn-group-actions"><button className="button primary" onClick={() => void connect()} disabled={!!busy || !settings?.gmailConfigured}><Plus size={17} />{busy === 'connect' ? 'Connecting…' : 'Connect Gmail'}</button><button className="button secondary" onClick={() => { setImportError(''); setImportOpen(true); }} disabled={!!busy}><FileText size={17} />Import email</button><span className="cn-actions-note">Gmail is supported.</span></div>
+        <div className="cn-group-actions"><button className="button primary" onClick={() => void connect()} disabled={!!busy || !!pending || !connection?.gmailConfigured || workspace !== 'personal'}><Plus size={17} />{busy === 'connect' ? 'Connecting…' : 'Connect Gmail'}</button><button className="button secondary" onClick={() => { setImportError(''); setImportOpen(true); }} disabled={!!busy}><FileText size={17} />Import email</button><span className="cn-actions-note">Read-only Gmail access</span></div>
+        {pending && <div className="cn-pending" role="status"><div><strong>Finish connecting in your browser</strong><p>Approve read-only Gmail access, then return here. This page will update automatically.</p></div><div className="cn-pending-actions"><a className="button secondary small" href={pending.url} target="_blank" rel="noopener noreferrer">Continue to Google</a><button className="text-button" onClick={cancelConnection}>Cancel</button></div></div>}
+        {connectionMessage && <div className="cn-connection-message" role="status"><Check size={17} /><p>{connectionMessage}</p></div>}
+        {statusError && <div className="cn-inline-error" role="alert"><WarningCircle size={17} /><p>{statusError}</p><button className="text-button" onClick={() => void loadGmailStatus()}>Check again</button></div>}
+        {workspace === 'demo' && <p className="cn-personal-note">Switch to your personal workspace to connect or manage Gmail.</p>}
         {actionError && <div className="cn-inline-error" role="alert"><WarningCircle size={17} /><p>{actionError}</p><button className="text-button" onClick={() => setActionError('')}>Dismiss</button></div>}
-        {settings && !settings.gmailConfigured && <details className="cn-setup"><summary><span>Google setup required</span><CaretDown size={15} /></summary><div className="cn-setup-body"><p>Gmail connections are not configured on this server. You can import emails until setup is complete.</p></div></details>}
+        {connection && !connection.gmailConfigured && !statusError && <details className="cn-setup"><summary><span>Google setup required</span><CaretDown size={15} /></summary><div className="cn-setup-body"><p>Gmail connections are not available yet. You can import emails until setup is complete.</p></div></details>}
       </div>
-      <p className="cn-section-footnote">Inboxes are checked while the app service is running. Your existing emails stay in your inbox.</p>
+      <p className="cn-section-footnote">ApplyTrack uses read-only access to find application updates. It cannot send, edit or delete your Gmail messages. {hosted ? 'Inbox checks continue in the cloud when this app is closed.' : 'Inboxes are checked while the app service is running.'}</p><p className="cn-section-footnote">Clear matches update your applications. Messages that need a match or confirmation go to review.</p>
     </section>
 
     {(items.length > 0 || reviewError) && <section className="cn-section" aria-labelledby="email-review-heading">

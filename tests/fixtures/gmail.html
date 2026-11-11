@@ -1,0 +1,12 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gmail connections</title></head><body><div id="root"></div><script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import Connections from '../../src/Connections.tsx';
+import '../../src/styles.css';
+const settings = {gmailConfigured:true,inboxes:[],gmailSyncMode:'cloud',extensionToken:'synthetic-code',session:null,cloud:{enabled:true,configured:true,user:{id:'synthetic-user',email:'applicant@example.invalid'}}};
+function Harness() {
+ const [workspace,setWorkspace] = React.useState('personal'), [mounted,setMounted] = React.useState(true);
+ return React.createElement('main',{style:{padding:24,maxWidth:1100,margin:'auto'}},React.createElement('button',{onClick:()=>setWorkspace(value=>value==='personal'?'demo':'personal')},'Switch workspace'),React.createElement('button',{onClick:()=>setMounted(false)},'Sign out'),mounted && React.createElement(Connections,{settings,applications:[],workspace,onChange:()=>{window.gmailRefreshes=(window.gmailRefreshes||0)+1},notify:()=>{}}));
+}
+createRoot(document.getElementById('root')).render(React.createElement(Harness));
+</script></body></html>

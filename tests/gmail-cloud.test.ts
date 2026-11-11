@@ -60,7 +60,7 @@ test('cloud Gmail routes use hosted OAuth without cookies and preserve per-accou
     assert.deepEqual((await (await f.api('/inboxes', {}, 'bob')).json()).inboxes, []);
     assert.equal((await f.api('/inboxes/inbox-one/sync', post({}), 'bob')).status, 404);
     assert.deepEqual(await (await f.api('/inboxes/inbox-one/sync', post({}))).json(), { syncing: true });
-    assert.equal((await f.api('/inboxes/inbox-one', { method: 'DELETE' })).status, 204);
+    assert.deepEqual(await (await f.api('/inboxes/inbox-one', { method: 'DELETE' })).json(), { disconnected: true });
     assert.equal(f.store.listMeta('inbox-token:').length, 0);
     unavailable = true;
     const status = await f.api('/inboxes'); assert.equal(status.status, 200); assert.match((await status.json()).gmailStatusError, /unavailable/);

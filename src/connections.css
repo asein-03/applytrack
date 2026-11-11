@@ -112,3 +112,13 @@
   .cn-pairing > code { font-size: 11px; }
   .cn-email-body { max-height: 230px; font-size: 13px; }
 }
+
+.cn-pending { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding: 20px 22px; border-top: 1px solid var(--line); background: var(--surface); }
+.cn-pending strong { display: block; font-size: 13px; font-weight: 600; }
+.cn-pending p { max-width: 58ch; color: var(--muted); font-size: 12px; line-height: 1.6; margin-top: 5px; }
+.cn-pending-actions { display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+.cn-connection-message { display: flex; align-items: flex-start; gap: 9px; padding: 16px 22px; border-top: 1px solid var(--line); color: var(--green); }
+.cn-connection-message > svg { flex-shrink: 0; margin-top: 1px; }
+.cn-connection-message p, .cn-personal-note { font-size: 12px; line-height: 1.6; }
+.cn-personal-note { color: var(--muted); padding: 0 22px 18px; }
+@media (max-width: 600px) { .cn-pending, .cn-connection-message { padding: 17px 16px; } .cn-pending-actions { flex-wrap: wrap; } }
