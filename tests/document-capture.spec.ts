@@ -556,7 +556,7 @@ test('popup distinguishes a saved cloud copy, missing copy and disconnected pend
   await expect(page.locator('#capture-recent')).toContainText('Résumé_Product_Designer');
   await expect(page.locator('#capture-retry')).toBeHidden();
   expect(await page.locator('#capture-notice').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
-  await page.screenshot({ path: '/Users/asein/Documents/Codex/2026-11-10/h/work/capture-resilience-popup.png', fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('capture-popup.png'), fullPage: true });
   await page.evaluate(() => {
     const state = (window as any).__popupState;
     state.captureStatus.state = 'attention'; state.captureStatus.detail = 'File details were saved, but the copy is missing. Select the same file again to save it.';
