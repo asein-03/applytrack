@@ -106,8 +106,13 @@ export async function runGate(args = process.argv.slice(2)) {
   const emailBaseIndex = args.indexOf('--email-base');
   if (emailBaseIndex !== -1) {
     const base = args[emailBaseIndex + 1];
-    if (!/^[a-f0-9]{40}$/.test(base || '') || /^0+$/.test(base)) throw new Error('Provide an existing commit for the new-commit email check.');
-    for (const row of git(['log', `${base}..HEAD`, '--format=%H%x09%ae%x09%ce']).toString().trim().split('\n').filter(Boolean)) {
+    if (!/^[a-f0-9]{40}$/.test(base || '') || /^0+$/.test(base)) throw new Error('Provide a valid commit ID for the new-commit email check.');
+    let range = 'HEAD';
+    try {
+      git(['cat-file', '-e', `${base}^{commit}`], { stdio: ['ignore', 'pipe', 'ignore'] });
+      range = `${base}..HEAD`;
+    } catch { /* After a history rewrite, audit every current commit if the previous base is unavailable. */ }
+    for (const row of git(['log', range, '--format=%H%x09%ae%x09%ce']).toString().trim().split('\n').filter(Boolean)) {
       const [id, author, committer] = row.split('\t');
       if (isPrivateEmail(author)) findings.push({ path: `commit:${id}`, type: 'public-author-email' });
       if (isPrivateEmail(committer)) findings.push({ path: `commit:${id}`, type: 'public-committer-email' });
