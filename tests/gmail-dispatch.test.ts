@@ -49,7 +49,7 @@ test('only fresh, signed, one-use tickets reach the atomic database consume', as
   assert.equal(await verifyDispatch(request(await signedHeaders(issuedAt - 91, ticket)), secret, consume, now), false);
   assert.equal(await verifyDispatch(request(await signedHeaders(issuedAt + 16, ticket)), secret, consume, now), false);
   assert.equal(calls, 0);
-  assert.equal(await verifyDispatch(request(headers), secret, consume, now), true);
+  assert.equal(await verifyDispatch(request(headers, 'https://edge.example.com/gmail'), secret, consume, now), true);
   assert.equal(await verifyDispatch(request(headers), secret, consume, now), false);
   assert.equal(calls, 2);
 });
