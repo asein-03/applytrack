@@ -5,6 +5,8 @@ const ORIGINS = [
 ];
 const $ = selector => document.querySelector(selector);
 let paired = false;
+let connected = false;
+let captureHasIssue = false;
 let active = false;
 let busy = '';
 let editingPairing = false;
@@ -17,13 +19,14 @@ const message = (text, error = false) => {
 function renderControls() {
   $('#start').hidden = active;
   $('#stop').hidden = !active;
-  $('#start').disabled = !paired || !!busy;
+  $('#start').disabled = !paired || !connected || !!busy;
   $('#stop').disabled = !!busy;
-  $('#save').disabled = !paired || !!busy;
+  $('#save').disabled = !paired || !connected || !!busy;
   $('#pair-submit').disabled = !!busy;
   $('#token').disabled = !!busy;
   $('#retry').disabled = !!busy;
   $('#capture-retry').disabled = !!busy;
+  $('#capture-retry').hidden = !pendingCaptures && !captureHasIssue;
   $('#capture-retry').textContent = busy === 'capture' ? 'Checking…' : pendingCaptures ? 'Check saves' : 'Dismiss';
   $('#change-pairing').disabled = !!busy;
   $('#pair-cancel').disabled = !!busy;
@@ -44,28 +47,52 @@ function renderCaptureNotice(result) {
   const pending = Math.max(0, Number(result.pendingCaptures) || 0);
   pendingCaptures = pending;
   const error = typeof result.captureError === 'string' ? result.captureError : '';
-  $('#capture-notice').hidden = !pending && !error;
-  $('#capture-notice').classList.toggle('error', !!error && !pending);
-  $('#capture-notice').setAttribute('role', error && !pending ? 'alert' : 'status');
-  $('#capture-heading').textContent = pending ? `${pending} ${pending === 1 ? 'capture' : 'captures'} waiting to save` : 'Capture needs attention';
-  $('#capture-detail').textContent = error || 'Keep tracking on while these captures save.';
+  const status = result.captureStatus;
+  captureHasIssue = status ? status.state === 'attention' : !!error;
+  const visible = status ? status.state !== 'idle' : !!pending || !!error;
+  $('#capture-notice').hidden = !visible;
+  $('#capture-notice').classList.toggle('error', captureHasIssue);
+  $('#capture-notice').setAttribute('role', captureHasIssue ? 'alert' : 'status');
+  const labels = { detected: 'Detected', saving: 'Saving', saved: 'Saved', attention: 'Needs attention', idle: '' };
+  $('#capture-heading').textContent = status ? labels[status.state] || 'Needs attention'
+    : pending ? `${pending} ${pending === 1 ? 'capture' : 'captures'} waiting to save` : 'Capture needs attention';
+  $('#capture-detail').textContent = status?.detail || error || 'Keep tracking on while these captures save.';
+  const recent = $('#capture-recent'); recent.replaceChildren();
+  for (const capture of (status?.recent || []).slice(0, 3)) {
+    const row = document.createElement('li');
+    const top = document.createElement('div'); top.className = 'capture-row-heading';
+    const name = document.createElement('strong'); name.textContent = capture.name;
+    const state = document.createElement('span'); state.className = `capture-state capture-state-${capture.state}`; state.textContent = labels[capture.state] || 'Needs attention';
+    top.append(name, state);
+    const detail = document.createElement('p'); detail.textContent = capture.detail;
+    row.append(top, detail); recent.append(row);
+  }
+  recent.hidden = !recent.children.length;
 }
 async function refresh(preserveMessage = false) {
   try {
     const result = await send({ type: 'state' });
     const previousActive = active;
     const previousPaired = paired;
-    paired = !!result.paired;
+    paired = !!result.paired; connected = result.connected !== false;
     active = !!(result.session?.browserEnabled && !result.session.stoppedAt);
     $('#status').textContent = active ? 'Browser tracking is on' : paired ? 'Ready to track' : 'Connect to Apply';
     $('#indicator').classList.toggle('active', active);
     $('#indicator').classList.remove('error');
     $('#connection-label').textContent = paired ? 'Local app connected' : 'Pairing required';
-    $('#retry').hidden = true;
+    $('#retry').hidden = connected;
     renderCaptureNotice(result);
+    if (!connected) {
+      active = false;
+      $('#status').textContent = 'Connection unavailable';
+      $('#connection-label').textContent = 'Apply app unavailable';
+      $('#indicator').classList.remove('active'); $('#indicator').classList.add('error');
+      message(result.connectionError || 'Open Apply to reconnect and finish saving captures.', true);
+      renderControls(); return;
+    }
     if (!preserveMessage || previousActive !== active || previousPaired !== paired) message(active ? 'Applications on supported sites are being tracked.' : paired ? 'Start a session before you begin applying.' : 'Pair this extension with the dashboard on your computer.');
   } catch (error) {
-    paired = false;
+    connected = false; paired = false;
     active = false;
     $('#status').textContent = 'Connection unavailable';
     $('#connection-label').textContent = 'Local app unavailable';
@@ -132,5 +159,8 @@ $('#capture-retry').addEventListener('click', async () => {
   finally { busy = ''; renderControls(); }
 });
 setInterval(() => { if (!busy && !editingPairing) void refresh(true); }, 3000);
-$('#open').addEventListener('click', () => { chrome.tabs.create({ url: 'http://127.0.0.1:5173' }); });
+$('#open').addEventListener('click', async () => {
+  try { await send({ type: 'open-dashboard' }); }
+  catch (error) { message(error.message, true); }
+});
 void refresh();

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Apply Companion",
-  "description": "Save job applications to your local Apply dashboard during an active tracking session.",
-  "version": "0.2.0",
+  "description": "Track job applications and saved documents during an active Apply session.",
+  "version": "0.3.0",
   "minimum_chrome_version": "120",
   "permissions": ["storage", "activeTab", "scripting", "alarms"],
   "host_permissions": ["http://127.0.0.1:4318/*"],
