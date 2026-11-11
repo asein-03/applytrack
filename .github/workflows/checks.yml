@@ -6,6 +6,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
+  cloud:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          deno-version: v2.9.6
+      - run: deno check --config supabase/functions/gmail/deno.json --frozen supabase/functions/gmail/index.ts
+      - run: deno test --config supabase/functions/gmail/deno.json --frozen tests/gmail-sync.test.ts
   test:
     runs-on: ubuntu-latest
     steps:

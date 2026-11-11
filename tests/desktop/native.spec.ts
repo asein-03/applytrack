@@ -12,7 +12,7 @@ test('desktop serves the dashboard, isolates native privileges and keeps trackin
     await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
     expect(await page.evaluate(() => [typeof (window as any).require, typeof (window as any).process])).toEqual(['undefined', 'undefined']);
     const state = await page.evaluate(() => window.applyDesktop!.getState());
-    expect(state.version).toBe('0.2.0');
+    expect(state.version).toBe(JSON.parse(await readFile(resolve('package.json'), 'utf8')).version);
     const cloudConfig = await (await fetch('http://localhost:4318/api/cloud/config')).json();
     if (cloudConfig.url) {
       const key = `sb-${new URL(cloudConfig.url).hostname.split('.')[0]}-auth-token`;
