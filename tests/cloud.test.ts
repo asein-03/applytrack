@@ -71,7 +71,7 @@ test('binding a different account and signing out stop tracking and invalidate p
     assert.equal((await f.api('/cloud/session', { method: 'DELETE' }, 'alice')).status, 409);
     await f.api('/sessions', post({ browserEnabled: true, screenEnabled: false }), 'bob');
     const secondToken = f.store.getMeta<string>('extensionToken')!;
-    assert.equal((await f.api('/cloud/session', { method: 'DELETE' }, secondToken)).status, 401);
+    assert.equal((await f.api('/cloud/session', { method: 'DELETE' }, secondToken)).status, 403);
     assert.equal((await f.api('/cloud/session', { method: 'DELETE' }, 'bob')).status, 204);
     assert.equal(f.cloud.runtimeFor(f.cloud.actors.get('bob')!).getSession(), null);
     assert.notEqual(f.store.getMeta('extensionToken'), secondToken);
