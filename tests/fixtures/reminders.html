@@ -1,0 +1,12 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Reminder controls</title></head><body><div id="root"></div><script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { useReminders, ReminderSettings, ReminderCenter } from '../../src/Reminders.tsx';
+import '../../src/styles.css';
+function Harness() {
+  const params = new URLSearchParams(location.search);
+  const model = useReminders({ workspace: params.has('demo') ? 'demo' : 'personal', desktop: params.has('desktop'), onOpenApplication: id => { window.reminderOpened = id; } });
+  return React.createElement('main', { style: { maxWidth: 850, padding: 24, margin: 'auto' } }, React.createElement(ReminderSettings, { model }), React.createElement(ReminderCenter, { model, onOpenApplication: id => { window.reminderOpened = id; } }));
+}
+createRoot(document.getElementById('root')).render(React.createElement(Harness));
+</script></body></html>
