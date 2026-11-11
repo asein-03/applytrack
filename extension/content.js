@@ -229,6 +229,8 @@
     };
     inputs.set(input, entry);
     selections.set(kind, entry);
+    void request({ type: 'document-detected', sessionId: captured.sessionId, context: captured.context, eventId: entry.id, document: metadata(entry.file) })
+      .catch(error => report(error.message));
     entry.ready = (async () => {
       const current = await request({ type: 'state' });
       if (!current.session?.browserEnabled || current.session.id !== captured.sessionId || activeKey !== captured.key) throw new Error('Tracking stopped before the document could be captured.');
