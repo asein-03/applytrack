@@ -37,7 +37,7 @@ before(async () => {
     create function net.http_post(url text,headers jsonb,body jsonb,timeout_milliseconds integer) returns bigint language sql as $$select 42::bigint$$;
     create table vault.secrets(name text,secret text); create table vault.decrypted_secrets(name text,decrypted_secret text);
   `);
-  for (const file of ['20261110200047_cloud_workspace.sql', '20261111033846_active_session_security.sql', '20261111041447_hosted_gmail.sql', '20261111043519_account_deletion.sql']) {
+  for (const file of ['20261110200047_cloud_workspace.sql', '20261111033846_active_session_security.sql', '20261111041447_hosted_gmail.sql', '20261111043519_account_deletion.sql', '20261111044338_account_read_policies.sql']) {
     const sql = await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), 'utf8');
     await db.exec(sql.replace('create extension if not exists pg_net with schema extensions;', ''));
   }
@@ -110,4 +110,19 @@ test('deletion leases reject concurrent and stale cleanup while expired attempts
   assert.notEqual(retry.leaseId, lease.leaseId);
   assert.equal((await db.query('select * from private.apply_gmail_revocations')).rows.length, 1);
   await assert.rejects(rpc('purge_workspace', lease), code('40001'));
+});
+
+test('workspace and document reads remain available in PostgREST read-only transactions', async () => {
+  await claims('authenticated'); await db.exec('set role authenticated; begin read only;');
+  try {
+    assert.equal((await db.query('select * from public.apply_workspaces')).rows.length, 1);
+    assert.equal((await db.query('select * from storage.objects')).rows.length, 1);
+  } finally { await db.exec('rollback; reset role;'); }
+  await claims('service_role');
+  await rpc('begin', { userId: owner, sessionId: session });
+  await claims('authenticated'); await db.exec('set role authenticated; begin read only;');
+  try {
+    assert.equal((await db.query('select * from public.apply_workspaces')).rows.length, 0);
+    assert.equal((await db.query('select * from storage.objects')).rows.length, 0);
+  } finally { await db.exec('rollback; reset role;'); }
 });
