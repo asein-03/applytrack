@@ -1,7 +1,7 @@
 import { documentMetadata } from '../shared/document-evidence.js';
 export { sameDocument, documentMetadata, applyDocumentEvidence } from '../shared/document-evidence.js';
 import { createHash } from 'node:crypto';
-import type { Application, CaptureEvent, DocumentFile } from '../shared/types.js';
+import type { Application, ApplicationDocument, CaptureEvent, DocumentFile } from '../shared/types.js';
 import { HttpError } from './store.js';
 import { DOCUMENT_BUCKET, type CloudActor, type WorkspaceRepository } from './cloud.js';
 
