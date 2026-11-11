@@ -1,5 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto';
-import type { Application, ApplicationDocument, CaptureEvent, DocumentFile, Evidence } from '../shared/types.js';
+import { documentMetadata } from '../shared/document-evidence.js';
+export { sameDocument, documentMetadata, applyDocumentEvidence } from '../shared/document-evidence.js';
+import { createHash } from 'node:crypto';
+import type { Application, CaptureEvent, DocumentFile } from '../shared/types.js';
 import { HttpError } from './store.js';
 import { DOCUMENT_BUCKET, type CloudActor, type WorkspaceRepository } from './cloud.js';
 
@@ -7,15 +9,6 @@ export const MAX_COPY_BYTES = 10 * 1024 * 1024;
 export const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 export const DOCUMENT_MIMES = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'application/octet-stream', ''];
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
-export function sameDocument(left: DocumentFile, right: DocumentFile): boolean {
-  if (left.kind !== right.kind) return false;
-  if (left.sha256 && right.sha256) return left.sha256 === right.sha256 && left.name === right.name && left.size === right.size && left.lastModified === right.lastModified;
-  if (!!left.sha256 !== !!right.sha256) return false;
-  return left.name === right.name && left.size === right.size && left.lastModified === right.lastModified && left.mimeType === right.mimeType;
-}
-export function documentMetadata(file: DocumentFile): DocumentFile {
-  return { kind: file.kind, name: file.name, size: file.size, mimeType: file.mimeType, lastModified: file.lastModified, sha256: file.sha256 };
-}
 export function prepareDocumentCapture(input: CaptureEvent): { input: CaptureEvent; bytes: Buffer | null } {
   const selected = input.document;
   if (!selected) return { input, bytes: null };
@@ -31,48 +24,6 @@ export function prepareDocumentCapture(input: CaptureEvent): { input: CaptureEve
   if (metadata.sha256 && metadata.sha256 !== digest) throw new HttpError(422, 'Document fingerprint does not match the uploaded file.');
   metadata.sha256 = digest;
   return { input: { ...input, document: metadata }, bytes };
-}
-
-export function applyDocumentEvidence(application: Application, input: CaptureEvent, evidence: Evidence): void {
-  if (input.source !== 'browser') return;
-  const docs = application.documents ?? (application.documents = []);
-  const observedAt = evidence.observedAt;
-  if (input.kind === 'document_selected' && input.document) {
-    const file = documentMetadata(input.document);
-    const current = docs.find(doc => doc.kind === file.kind && doc.status === 'selected');
-    const association = file.kind === 'resume' ? 'resumeDocumentId' : 'coverLetterDocumentId';
-    const label = file.kind === 'resume' ? 'resumeName' : 'coverLetterName';
-    const newest = docs.find(doc => doc.kind === file.kind);
-    const stale = !!newest && new Date(newest.detectedAt).getTime() > new Date(observedAt).getTime();
-    if (current && sameDocument(current, file) && !stale) {
-      evidence.documentId = current.id;
-      application[association] = current.id; application[label] = current.name;
-      return;
-    }
-    if (current && !stale) current.status = 'replaced';
-    const document: ApplicationDocument = { ...file, id: randomUUID(), detectedAt: observedAt, status: stale ? 'replaced' : 'selected', submittedAt: null, stored: false };
-    docs.push(document); docs.sort((a,b) => b.detectedAt.localeCompare(a.detectedAt));
-    evidence.documentId = document.id;
-    if (!stale) { application[association] = document.id; application[label] = document.name; }
-  } else if (input.kind === 'document_removed' && input.document) {
-    const file = input.document;
-    const association = file.kind === 'resume' ? 'resumeDocumentId' : 'coverLetterDocumentId';
-    const label = file.kind === 'resume' ? 'resumeName' : 'coverLetterName';
-    const current = docs.find(doc => doc.id === application[association]) ?? docs.find(doc => doc.kind === file.kind && doc.status === 'selected');
-    if (current && sameDocument(current, file) && new Date(current.detectedAt).getTime() <= new Date(observedAt).getTime()) {
-      current.status = 'removed'; evidence.documentId = current.id;
-      if (application[association] === current.id) { application[association] = null; application[label] = ''; }
-    }
-  } else if (input.kind === 'submission_confirmed' && input.documents) {
-    for (const file of input.documents) {
-      const candidates = docs.filter(doc => sameDocument(doc, file) && new Date(doc.detectedAt).getTime() <= new Date(observedAt).getTime());
-      // Metadata without a fingerprint cannot disambiguate historical versions.
-      if (!file.sha256 && candidates.length !== 1) continue;
-      const target = candidates[0];
-      if (!target) continue;
-      target.status = 'submitted'; target.submittedAt ??= observedAt;
-    }
-  }
 }
 
 export function documentPath(actor: CloudActor, applicationId: string, sha256: string): string {

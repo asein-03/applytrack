@@ -92,3 +92,10 @@ test('remote sender claims cannot change stages or create tasks without user rev
     assert.equal(replayed.application.evidence.filter(item => item.sourceId === captured.evidence.sourceId).length, 1);
   } finally { store.close(); }
 });
+
+test('written deadlines require an explicit year and preserve date-only meaning', () => {
+  assert.equal(explicitDeadline('Complete the assessment by Nov 16, 2026.'), '2026-11-16');
+  assert.equal(explicitDeadline('Deadline: 16 November 2026'), '2026-11-16');
+  assert.equal(explicitDeadline('Due on February 29, 2028.'), '2028-02-29');
+  for (const text of ['Due: February 29, 2026', 'Due: November 16', 'Due: 11/16/2026', 'Due: Nov 16, 2026 at 5pm', 'Due: 2026-11-16 17:00', 'Due: 2026-11-16T17:00', 'Due: Nov 16, 2026. Deadline: Nov 17, 2026.']) assert.equal(explicitDeadline(text), null, text);
+});

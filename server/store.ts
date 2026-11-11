@@ -4,9 +4,8 @@ import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Application, CaptureEvent, Evidence, Inbox, Task, TrackingSession, Workspace } from '../shared/types.js';
 
-export class HttpError extends Error {
-  constructor(public status: number, message: string) { super(message); }
-}
+import { HttpError } from '../shared/errors.js';
+export { HttpError } from '../shared/errors.js';
 
 export type ApplicationInput = Partial<Omit<Application, 'id' | 'createdAt' | 'updatedAt' | 'tasks' | 'evidence' | 'timeline' | 'documents' | 'resumeDocumentId' | 'coverLetterDocumentId'>> & { company: string; role: string };
 export type ApplicationPatch = Partial<Omit<Application, 'id' | 'workspace' | 'createdAt' | 'updatedAt' | 'tasks' | 'evidence' | 'timeline' | 'documents' | 'resumeDocumentId' | 'coverLetterDocumentId'>>;
