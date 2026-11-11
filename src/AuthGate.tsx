@@ -1,15 +1,15 @@
 import { createContext, Fragment, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { Session, SupabaseClient } from '@supabase/supabase-js';
 import { ArrowLeft, Check, EnvelopeSimple, WarningCircle } from '@phosphor-icons/react';
-import { clearWorkspaceContext, getAuthCallbackState, getCloudClient, loadCloudConfig, prepareAccountWorkspace, type CloudConfig } from './cloud';
+import { clearWorkspaceContext, clearSavedAccountSession, getAuthCallbackState, getCloudClient, loadCloudConfig, prepareAccountWorkspace, type CloudConfig } from './cloud';
 import './auth.css';
 
-interface Account { enabled: boolean; email: string | null; signOut: (() => Promise<void>) | null; }
+interface Account { enabled: boolean; email: string | null; signOut: (() => Promise<void>) | null; deleteAccount?: (password: string) => Promise<void>; }
 const AccountContext = createContext<Account>({ enabled: false, email: null, signOut: null });
 export const useCloudAccount = () => useContext(AccountContext);
 
 function AuthShell({ children }: { children: ReactNode }) {
-  return <main className="auth-shell"><a className="brand auth-brand" href="/" aria-label="Apply"><span className="brand-mark"><Check size={22} weight="bold" /></span><span>Apply</span></a><div className="auth-panel">{children}</div></main>;
+  return <main className="auth-shell"><a className="brand auth-brand" href="/" aria-label="ApplyTrack"><span className="brand-mark"><Check size={22} weight="bold" /></span><span>ApplyTrack</span></a><div className="auth-panel">{children}</div></main>;
 }
 
 function AuthForm({ client, onSession, initialError }: { client: SupabaseClient; onSession: (session: Session) => void; initialError: string }) {
@@ -56,7 +56,7 @@ function AuthForm({ client, onSession, initialError }: { client: SupabaseClient;
     {mode === 'signin' && <button type="button" className="text-button auth-forgot" onClick={() => changeMode('reset')} disabled={busy}>Forgot password?</button>}
     {error && <p className="auth-error" role="alert"><WarningCircle size={17} />{error}</p>}
     <button className="button primary auth-submit" disabled={busy}>{busy ? 'Working…' : mode === 'signin' ? 'Sign in' : mode === 'signup' ? 'Create account' : 'Send reset link'}</button>
-  </form><div className="auth-alternative">{mode === 'signin' ? <><span>New to Apply?</span><button className="text-button" onClick={() => changeMode('signup')} disabled={busy}>Create an account</button></> : <button className="text-button" onClick={() => changeMode('signin')} disabled={busy}><ArrowLeft size={14} />Back to sign in</button>}</div></>;
+  </form>{mode === 'signup' && <p className="auth-field-help">Your account stores applications, documents and updates. <a href="https://asein-03.github.io/applytrack/privacy/" target="_blank" rel="noopener noreferrer">Read the privacy policy</a>.</p>}<div className="auth-alternative">{mode === 'signin' ? <><span>New to ApplyTrack?</span><button className="text-button" onClick={() => changeMode('signup')} disabled={busy}>Create an account</button></> : <button className="text-button" onClick={() => changeMode('signin')} disabled={busy}><ArrowLeft size={14} />Back to sign in</button>}</div></>;
 }
 
 function RecoveryForm({ client, onComplete }: { client: SupabaseClient; onComplete: () => void }) {
@@ -98,6 +98,8 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [logoutPending, setLogoutPending] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [logoutError, setLogoutError] = useState('');
+  const [deleted, setDeleted] = useState<{ revocationPending: boolean } | null>(null);
+  const [deleteCleanupError, setDeleteCleanupError] = useState('');
   const logoutRef = useRef(false);
   const logoutBusyRef = useRef(false);
   const lastSession = useRef<Session | null>(null);
@@ -180,14 +182,31 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     finally { logoutBusyRef.current = false; setLogoutBusy(false); }
   }
 
+  async function deleteAccount(password: string) {
+    const client = getCloudClient()!;
+    const { data } = await client.auth.getSession();
+    if (!data.session || data.session.user.id !== session?.user.id) throw new Error('Your account changed. Sign in again before deleting it.');
+    const response = await fetch('/api/cloud/account', { method: 'DELETE', headers: { Authorization: `Bearer ${data.session.access_token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmation: 'DELETE', password }) });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || result?.deleted !== true || typeof result.revocationPending !== 'boolean') throw new Error(result?.error || 'Account deletion did not finish. Try again.');
+    const current = (await client.auth.getSession()).data.session;
+    if (current && current.user.id !== data.session.user.id) return;
+    logoutRef.current = true;
+    setBoundUser(null); lastSession.current = null; setSession(null);
+    setDeleted({ revocationPending: result.revocationPending });
+    try { await clearSavedAccountSession(); } catch { setDeleteCleanupError('Your account was deleted, but this device could not clear its saved sign-in. Try clearing it again.'); }
+    setRecovery(false); setBindingError(''); setAuthError('');
+  }
+
   if (loadError) return <AuthShell><h1>Account service unavailable</h1><p className="auth-intro" role="alert">{loadError}</p><button className="button primary auth-submit" onClick={() => setAttempt(value => value + 1)}>Try again</button></AuthShell>;
   if (!config || !authReady) return <AuthShell><div className="auth-loading" role="status">Loading your account…</div></AuthShell>;
   if (!config.enabled) return <AccountContext.Provider value={{ enabled: false, email: null, signOut: null }}>{children}</AccountContext.Provider>;
   if (!config.configured) return <AuthShell><span className="auth-state-icon"><WarningCircle size={26} /></span><h1>Cloud setup required</h1><p className="auth-intro">Account storage is not configured yet. Your workspace will be available when setup is complete.</p><button className="button secondary auth-submit" onClick={() => setAttempt(value => value + 1)}>Check again</button></AuthShell>;
+  if (deleted) return <AuthShell><span className="auth-state-icon"><Check size={26} /></span><h1>Account deleted</h1><p className="auth-intro">Your account, applications, documents and saved email updates have been deleted.</p>{deleted.revocationPending && <p className="auth-intro">Google access removal is still being retried. You can also remove ApplyTrack in your Google Account connections.</p>}<p className="auth-error" role={deleteCleanupError ? "alert" : undefined}>{deleteCleanupError}</p>{deleteCleanupError ? <button className="button primary auth-submit" onClick={async () => { try { await clearSavedAccountSession(); setDeleteCleanupError(''); } catch { /* Keep the cleanup retry visible. */ } }}>Clear saved sign-in</button> : <button className="button secondary auth-submit" onClick={() => { setDeleted(null); logoutRef.current = false; }}>Back to sign in</button>}</AuthShell>;
   if (logoutPending) return <AuthShell><h1>{logoutError ? 'Sign-out needs attention' : 'Signing out'}</h1><p className="auth-intro">{logoutError ? 'Screen capture has stopped. Retry to close the device connection and finish signing out.' : 'Stopping tracking and closing your device connection.'}</p>{logoutError && <p className="auth-error" role="alert">{logoutError}</p>}{logoutError && <button className="button primary auth-submit" disabled={logoutBusy} onClick={() => void signOut()}>{logoutBusy ? 'Working…' : 'Try again'}</button>}</AuthShell>;
   if (!session) return <AuthShell><AuthForm key={authError} client={getCloudClient()!} onSession={setSession} initialError={authError} /></AuthShell>;
   if (recovery) return <AuthShell><RecoveryForm client={getCloudClient()!} onComplete={() => setRecovery(false)} /></AuthShell>;
   if (bindingError) return <AuthShell><h1>Could not open your workspace</h1><p className="auth-intro" role="alert">{bindingError}</p><button className="button primary auth-submit" onClick={() => setBindAttempt(value => value + 1)}>Try again</button><button className="text-button auth-secondary-action" onClick={() => void signOut()}>Sign out</button></AuthShell>;
   if (boundUser !== session.user.id) return <AuthShell><div className="auth-loading" role="status">Opening your workspace…</div></AuthShell>;
-  return <AccountContext.Provider value={{ enabled: true, email: session.user.email || null, signOut }}><Fragment key={session.user.id}>{children}</Fragment></AccountContext.Provider>;
+  return <AccountContext.Provider value={{ enabled: true, email: session.user.email || null, signOut, deleteAccount }}><Fragment key={session.user.id}>{children}</Fragment></AccountContext.Provider>;
 }

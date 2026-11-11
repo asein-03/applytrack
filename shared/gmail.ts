@@ -1,3 +1,4 @@
+export const GMAIL_TESTING = true;
 export const GMAIL_AUTH_PAGE = 'https://asein-03.github.io/applytrack/auth/';
 
 export function safeGmailAuthorizationUrl(value: unknown): string | null {

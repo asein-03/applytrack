@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { ArrowClockwise, CaretDown, CaretRight, Check, Cloud, Copy, DownloadSimple, EnvelopeSimple, FileText, LinkSimple, Plus, SignOut, Trash, UserCircle, WarningCircle } from '@phosphor-icons/react';
 import type { Application, GmailStatus, GmailSyncResult, GmailDisconnectResult, Inbox, Settings, Workspace } from '../shared/types';
 import { api } from './api';
-import { safeGmailAuthorizationUrl } from '../shared/gmail';
+import { GMAIL_TESTING, safeGmailAuthorizationUrl } from '../shared/gmail';
 import { useCloudAccount } from './AuthGate';
 import { dateLabel, Modal } from './ui';
 import './connections.css';
@@ -27,6 +27,11 @@ export default function Connections({ settings, applications, workspace, onChang
   const [showToken, setShowToken] = useState(false);
   const [copied, setCopied] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState('');
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [deleting, setDeleting] = useState(false);
   const [text, setText] = useState('');
   const [applicationId, setApplicationId] = useState('');
   const [items, setItems] = useState<ReviewItem[]>([]);
@@ -184,6 +189,15 @@ export default function Connections({ settings, applications, workspace, onChang
     } catch (error) { setResolveError(error instanceof Error ? error.message : 'Could not resolve email.'); }
     finally { setBusy(''); }
   }
+  async function deleteAccount(event: FormEvent) {
+    event.preventDefault();
+    if (deleteConfirmation !== 'DELETE' || !deletePassword || !account.deleteAccount || deleting) return;
+    setDeleting(true); setDeleteError('');
+    try { await account.deleteAccount(deletePassword); }
+    catch (error) { setDeleteError(error instanceof Error ? error.message : 'Account deletion did not finish. Try again.'); }
+    finally { setDeletePassword(''); setDeleting(false); }
+  }
+  function closeDeletion() { if (!deleting) { setDeleteOpen(false); setDeletePassword(''); setDeleteConfirmation(''); setDeleteError(''); } }
   async function copyToken() {
     if (!settings?.extensionToken) return;
     try {
@@ -196,7 +210,7 @@ export default function Connections({ settings, applications, workspace, onChang
   const closeReview = () => { if (!busy.startsWith('review:')) setSelected(null); };
 
   return <div className="connection-settings">
-    {account.enabled && <section className="cn-section" aria-labelledby="cloud-account-heading"><div className="cn-section-heading"><div><h2 id="cloud-account-heading">Your account</h2><p>Application records and saved documents stay with your account.</p></div><UserCircle size={23} aria-hidden="true" /></div><div className="cn-group cloud-account-row"><div><strong>{account.email || 'Signed-in account'}</strong><span>Signing out stops tracking on this device.</span></div><button className="button secondary small" onClick={() => void account.signOut?.()}><SignOut size={16} />Sign out</button></div></section>}
+    {account.enabled && <section className="cn-section" aria-labelledby="cloud-account-heading"><div className="cn-section-heading"><div><h2 id="cloud-account-heading">Your account</h2><p>Application records and saved documents stay with your account.</p></div><UserCircle size={23} aria-hidden="true" /></div><div className="cn-group cloud-account-row"><div><strong>{account.email || 'Signed-in account'}</strong><span>Signing out stops tracking on this device.</span></div><button className="button secondary small" onClick={() => void account.signOut?.()}><SignOut size={16} />Sign out</button></div>{account.deleteAccount && <div className="cn-account-delete"><p>Delete your account and its stored applications, documents and email updates.</p><button className="text-button danger-text" onClick={() => setDeleteOpen(true)}>Delete account</button></div>}</section>}
     <section className="cn-section" aria-labelledby="email-accounts-heading">
       <div className="cn-section-heading"><div><h2 id="email-accounts-heading">Email accounts</h2><p>Keep responses and next steps with the right application.</p></div><EnvelopeSimple size={22} aria-hidden="true" /></div>
       <div className="cn-group">
@@ -214,7 +228,8 @@ export default function Connections({ settings, applications, workspace, onChang
         {actionError && <div className="cn-inline-error" role="alert"><WarningCircle size={17} /><p>{actionError}</p><button className="text-button" onClick={() => setActionError('')}>Dismiss</button></div>}
         {connection && !connection.gmailConfigured && !statusError && <details className="cn-setup"><summary><span>Google setup required</span><CaretDown size={15} /></summary><div className="cn-setup-body"><p>Gmail connections are not available yet. You can import emails until setup is complete.</p></div></details>}
       </div>
-      <p className="cn-section-footnote">ApplyTrack uses read-only access to find application updates. It cannot send, edit or delete your Gmail messages. {hosted ? 'Inbox checks continue in the cloud when this app is closed.' : 'Inboxes are checked while the app service is running.'}</p><p className="cn-section-footnote">Clear matches update your applications. Messages that need a match or confirmation go to review.</p>
+      {hosted && GMAIL_TESTING && <p className="cn-section-footnote">Gmail is in testing. Your Google account must be on the approved test list. Google may ask you to reconnect after seven days.</p>}
+      <p className="cn-section-footnote">ApplyTrack uses read-only access to find application updates. It cannot send, edit or delete your Gmail messages. {hosted ? 'Inbox checks continue in the cloud when this app is closed.' : 'Inboxes are checked while the app service is running.'}</p><p className="cn-section-footnote">Clear matches update your applications. Messages that need a match or confirmation go to review. Relevant email text is stored with these updates. <a href="https://asein-03.github.io/applytrack/privacy/" target="_blank" rel="noopener noreferrer">Privacy policy</a></p>
     </section>
 
     {(items.length > 0 || reviewError) && <section className="cn-section" aria-labelledby="email-review-heading">
@@ -238,6 +253,9 @@ export default function Connections({ settings, applications, workspace, onChang
     {additionalSettings}
     <div className="cn-local-note"><Cloud size={19} /><p>{account.enabled ? 'Application records, document copies and confirmation snapshots are stored in your account.' : 'This test workspace stores application records on this computer.'}</p></div>
 
+    <Modal open={deleteOpen} onClose={closeDeletion} title="Delete your account?" description="This permanently deletes your account, applications, documents, confirmation snapshots and saved email updates. This cannot be undone.">
+      <form onSubmit={deleteAccount} aria-busy={deleting}><div className="modal-body cn-delete-form"><p>Gmail checking and tracking will stop. Your original Gmail messages are not deleted.</p><label className="field"><span>Current password</span><input type="password" autoComplete="current-password" value={deletePassword} onChange={event => setDeletePassword(event.target.value)} required maxLength={1024} disabled={deleting} /></label><label className="field"><span>Type DELETE to confirm</span><input value={deleteConfirmation} onChange={event => setDeleteConfirmation(event.target.value)} autoComplete="off" spellCheck={false} required disabled={deleting} /></label>{deleteError && <p className="form-error" role="alert">{deleteError}</p>}</div><div className="modal-footer"><button className="button secondary" type="button" onClick={closeDeletion} disabled={deleting}>Cancel</button><button className="button danger" disabled={deleting || deleteConfirmation !== 'DELETE' || !deletePassword}>{deleting ? 'Deleting…' : 'Delete account permanently'}</button></div></form>
+    </Modal>
     <Modal open={importOpen} onClose={closeImport} title="Import an email" description="Paste a confirmation, assessment invitation or recruiter response." wide>
       <form onSubmit={importEmail} aria-busy={busy === 'import'} className="cn-import-form"><div className="modal-body"><label className="field"><span>Email text</span><textarea rows={9} value={text} onChange={event => setText(event.target.value)} placeholder={'From: recruiter@example.com\nSubject: Your application\n\nPaste the message here.'} required maxLength={100000} disabled={busy === 'import'} aria-invalid={!!importError} aria-describedby={importError ? 'email-import-error' : 'email-import-help'} /></label><label className="field"><span>Application</span><select value={applicationId} onChange={event => setApplicationId(event.target.value)} disabled={busy === 'import'}><option value="">Match automatically</option>{applications.map(application => <option key={application.id} value={application.id}>{application.company} · {application.role}</option>)}</select></label><p className="field-help" id="email-import-help">Unclear matches are saved for review. No email is sent.</p>{importError && <p className="form-error" id="email-import-error" role="alert">{importError}</p>}</div><div className="modal-footer"><button className="button secondary" type="button" onClick={closeImport} disabled={busy === 'import'}>Cancel</button><button className="button primary" disabled={busy === 'import'}>{busy === 'import' ? 'Importing…' : 'Import email'}</button></div></form>
     </Modal>

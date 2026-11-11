@@ -91,3 +91,15 @@ export function prepareAccountWorkspace(userId: string) {
   if (localStorage.getItem('apply.account') !== userId) localStorage.removeItem('apply.workspace');
   localStorage.setItem('apply.account', userId);
 }
+
+export async function clearSavedAccountSession() {
+  await client?.auth.stopAutoRefresh();
+  if (config?.url) {
+    const key = `sb-${new URL(config.url).hostname.split('.')[0]}-auth-token`;
+    for (const suffix of ['', '-code-verifier', '-user']) {
+      localStorage.removeItem(key + suffix);
+      if (window.applyDesktop?.authStorage) await window.applyDesktop.authStorage.removeItem(key + suffix);
+    }
+  }
+  clearWorkspaceContext();
+}

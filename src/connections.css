@@ -122,3 +122,8 @@
 .cn-connection-message p, .cn-personal-note { font-size: 12px; line-height: 1.6; }
 .cn-personal-note { color: var(--muted); padding: 0 22px 18px; }
 @media (max-width: 600px) { .cn-pending, .cn-connection-message { padding: 17px 16px; } .cn-pending-actions { flex-wrap: wrap; } }
+
+.cn-account-delete { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 16px; }
+.cn-account-delete p { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.cn-delete-form { display: grid; gap: 22px; }
+.cn-delete-form > p { color: var(--muted); font-size: 14px; line-height: 1.6; }

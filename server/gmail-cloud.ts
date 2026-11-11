@@ -64,6 +64,7 @@ export class CloudGmail {
     this.loading.set(actor.id, task);
     try { return await task; } finally { if (this.loading.get(actor.id) === task) this.loading.delete(actor.id); }
   }
+  forgetAccount(id: string) { this.invalidate(id); }
   async connect(actor: CloudActor, inboxId?: string) { const result = await this.action(actor, 'connect', inboxId) as { url?: unknown }; return { url: gmailAuthorizationUrl(result?.url) }; }
   async sync(actor: CloudActor, inboxId: string): Promise<GmailSyncResult> { const result = syncSchema.safeParse(await this.action(actor, 'sync', inboxId)); if (!result.success) throw new HttpError(502, 'Gmail returned an invalid sync response. Try again.'); this.invalidate(actor.id); return result.data; }
   async disconnect(actor: CloudActor, inboxId: string): Promise<GmailDisconnectResult> { const result = z.object({ disconnected: z.literal(true), revocationPending: z.boolean().optional() }).safeParse(await this.action(actor, 'disconnect', inboxId)); if (!result.success) throw new HttpError(502, 'Gmail returned an invalid disconnection response. Check the connection status.'); this.invalidate(actor.id); return result.data; }

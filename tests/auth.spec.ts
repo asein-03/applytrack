@@ -8,7 +8,7 @@ const token = [Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toStrin
 const session = { access_token: token, refresh_token: 'test-refresh-token', expires_in: 3600, token_type: 'bearer', user };
 const application: Application = { id: 'cloud-test', company: 'Cloud test', role: 'Designer', workspace: 'personal', stage: 'saved', location: '', workMode: '', salary: '', url: '', jobId: '', description: '', email: '', resumeName: '', coverLetterName: '', recruiterName: '', recruiterEmail: '', notes: '', priority: 'normal', appliedAt: null, createdAt: '2026-11-10T12:00:00Z', updatedAt: '2026-11-10T12:00:00Z', tasks: [], evidence: [], timeline: [] };
 
-async function mockCloud(page: Page, options: { configured?: boolean; bind?: (route: Route, attempt: number) => Promise<void>; detach?: (route: Route) => Promise<void> } = {}) {
+async function mockCloud(page: Page, options: { configured?: boolean; bind?: (route: Route, attempt: number) => Promise<void>; detach?: (route: Route) => Promise<void>; deleteAccount?: (route: Route) => Promise<void> } = {}) {
   const apiCalls: { path: string; method: string; authorization?: string; body?: unknown }[] = [];
   const authCalls: { path: string; method: string; body?: unknown }[] = [];
   let bindAttempt = 0;
@@ -35,6 +35,7 @@ async function mockCloud(page: Page, options: { configured?: boolean; bind?: (ro
     const path = url.pathname;
     apiCalls.push({ path, method: request.method(), authorization: request.headers().authorization, body: request.postData() ? request.postDataJSON() : undefined });
     if (path === '/api/cloud/config') return route.fulfill({ json: { enabled: true, configured: options.configured !== false, url: authOrigin, publishableKey: 'sb_publishable_ui_test_only' } });
+    if (path === '/api/cloud/account' && options.deleteAccount) return options.deleteAccount(route);
     if (path === '/api/cloud/session') {
       if (request.method() === 'POST' && options.bind) return options.bind(route, ++bindAttempt);
       if (request.method() === 'DELETE' && options.detach) return options.detach(route);
@@ -284,4 +285,75 @@ test('an expired browser session can sign out while an unclosed tracking connect
   await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
   await expect(page.getByRole('alert')).toHaveText('Signed out of this browser. The tracking connection could not be closed. Sign in again to stop tracking.');
   await expect(page.getByRole('navigation')).toHaveCount(0);
+});
+
+
+test('account deletion requires password and exact confirmation, clears local data only after completion', async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const { apiCalls } = await mockCloud(page, { deleteAccount: async route => { await gate; await route.fulfill({ json: { deleted: true, revocationPending: true } }); } });
+  await page.goto('/'); await signIn(page);
+  await page.getByRole('navigation').getByRole('button', { name: 'Connections', exact: true }).click();
+  await page.getByRole('button', { name: 'Delete account', exact: true }).click();
+  const modal = page.getByRole('dialog', { name: 'Delete your account?' });
+  await expect(modal.getByText('Gmail checking and tracking will stop. Your original Gmail messages are not deleted.')).toBeVisible();
+  const confirm = modal.getByRole('button', { name: 'Delete account permanently' });
+  await expect(confirm).toBeDisabled();
+  await modal.getByLabel('Current password').fill('synthetic-password');
+  await modal.getByLabel('Type DELETE to confirm').fill('delete'); await expect(confirm).toBeDisabled();
+  await modal.getByLabel('Type DELETE to confirm').fill('DELETE'); await confirm.click();
+  await expect(modal.getByRole('button', { name: 'Deleting…' })).toBeDisabled();
+  await expect(modal.getByRole('button', { name: 'Cancel', exact: true })).toBeDisabled();
+  expect(await page.evaluate(() => localStorage.getItem('apply.account'))).toBe(user.id);
+  release();
+  await expect(page.getByRole('heading', { name: 'Account deleted', exact: true })).toBeVisible();
+  await expect(page.getByText(/Google access removal is still being retried/)).toBeVisible();
+  await expect(page.getByRole('navigation')).toHaveCount(0);
+  expect(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('sb-') || ['apply.account', 'apply.workspace'].includes(key)))).toEqual([]);
+  const request = apiCalls.find(call => call.path === '/api/cloud/account');
+  expect(request?.method).toBe('DELETE'); expect(request?.authorization).toBe(`Bearer ${token}`);
+  expect(request?.body).toEqual({ confirmation: 'DELETE', password: 'synthetic-password' });
+  expect(apiCalls.filter(call => call.path === '/api/cloud/session' && call.method === 'DELETE')).toHaveLength(0);
+  await page.getByRole('button', { name: 'Back to sign in' }).click();
+  await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+});
+
+test('failed account deletion leaves the workspace open and clears the entered password before retry', async ({ page }) => {
+  await mockCloud(page, { deleteAccount: async route => { await route.fulfill({ status: 403, json: { error: 'Your password could not be confirmed. Try again.' } }); } });
+  await page.goto('/'); await signIn(page);
+  await page.getByRole('navigation').getByRole('button', { name: 'Connections', exact: true }).click();
+  await page.getByRole('button', { name: 'Delete account', exact: true }).click();
+  const modal = page.getByRole('dialog', { name: 'Delete your account?' });
+  await modal.getByLabel('Current password').fill('synthetic-password'); await modal.getByLabel('Type DELETE to confirm').fill('DELETE');
+  await modal.getByRole('button', { name: 'Delete account permanently' }).click();
+  await expect(modal.getByRole('alert')).toHaveText('Your password could not be confirmed. Try again.');
+  await expect(modal.getByLabel('Current password')).toHaveValue('');
+  await expect(modal.getByRole('button', { name: 'Delete account permanently' })).toBeDisabled();
+  expect(await page.evaluate(() => localStorage.getItem('apply.account'))).toBe(user.id);
+  await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Your account', exact: true })).toBeVisible();
+});
+
+test('partial account deletion can be retried after reopening even when workspace access is frozen', async ({ page }) => {
+  let attempts = 0;
+  await mockCloud(page, { deleteAccount: async route => {
+    attempts++;
+    await route.fulfill(attempts === 1 ? { status: 503, json: { error: 'Account deletion did not finish. Your data may be partially removed. Try again to finish.' } } : { json: { deleted: true, revocationPending: false } });
+  } });
+  await page.route('**/api/applications?**', route => attempts ? route.fulfill({ status: 403, json: { error: 'Workspace unavailable during account deletion.' } }) : route.fallback());
+  await page.goto('/'); await signIn(page);
+  async function submitDeletion() {
+    await page.getByRole('navigation').getByRole('button', { name: 'Connections', exact: true }).click();
+    await page.getByRole('button', { name: 'Delete account', exact: true }).click();
+    const modal = page.getByRole('dialog', { name: 'Delete your account?' });
+    await modal.getByLabel('Current password').fill('synthetic-password'); await modal.getByLabel('Type DELETE to confirm').fill('DELETE');
+    await modal.getByRole('button', { name: 'Delete account permanently' }).click();
+  }
+  await submitDeletion();
+  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('Account deletion did not finish.');
+  await page.reload();
+  await expect(page.getByRole('navigation')).toBeVisible();
+  await submitDeletion();
+  await expect(page.getByRole('heading', { name: 'Account deleted', exact: true })).toBeVisible();
+  expect(attempts).toBe(2);
 });

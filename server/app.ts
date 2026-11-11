@@ -10,6 +10,7 @@ import { CloudService, WorkspaceRepository, type CloudActor } from './cloud.js';
 import { attachLibraryRoutes } from './library.js';
 import { attachReminderRoutes } from './reminders.js';
 import { cloudGmail } from './gmail-cloud.js';
+import { attachAccountRoutes } from './account.js';
 import { createProtectedVault } from './vault.js';
 import { archiveDocument, attachmentFilename, downloadDocument, drainDocumentDeletions, MAX_COPY_BYTES, MAX_DOCUMENT_BYTES, prepareDocumentCapture } from './documents.js';
 
@@ -132,6 +133,7 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
   app.use('/api', express.json({ limit: '3mb' }));
   const getWorkspace = (query: unknown): Workspace => workspace.parse(query ?? 'personal');
 
+  attachAccountRoutes(app, cloud);
   app.get('/api/health', (_req, res) => res.json({ ok: true, dashboardUrl: configuredOrigin && allowedOrigins.has(configuredOrigin) ? configuredOrigin : 'http://localhost:5173' }));
   app.get('/api/cloud/config', (_req, res) => res.json(cloud.config()));
   app.post('/api/cloud/session', async (req, res) => {
