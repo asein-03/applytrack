@@ -7,6 +7,7 @@ import { ingestEvent } from './events.js';
 import { classifyEmail, emailEvent, matchEmail, type IncomingEmail } from './email-parser.js';
 import { createVault } from './vault.js';
 import type { CloudActor, CloudService, WorkspaceRepository } from './cloud.js';
+import { cloudGmail } from './gmail-cloud.js';
 
 type Tokens = { access_token: string; refresh_token?: string; expires_at: number };
 type GmailPart = { mimeType?: string; filename?: string; body?: { data?: string }; parts?: GmailPart[]; headers?: Array<{ name: string; value: string }> };
@@ -166,7 +167,10 @@ export function attachEmailRoutes(app: Express, store: Store, options: { dataDir
   }
 
   async function syncInbox(id: string, actor: CloudActor | null = null) {
-    if (options.cloud?.enabled && !actor) actor = await options.cloud.activeActor();
+    if (options.cloud?.enabled) {
+      actor ??= await options.cloud.activeActor();
+      return cloudGmail(options.cloud).sync(actor, id);
+    }
     const runtime = runtimeFor(actor);
     const syncKey = `${actor?.id ?? 'local'}:${id}`;
     const isCurrent = () => !stopped && !!runtime.getMeta(`inbox:${id}`) && (!actor || store.getMeta('activeCloudUser') === actor.id);
@@ -218,10 +222,12 @@ export function attachEmailRoutes(app: Express, store: Store, options: { dataDir
     } finally { syncing.delete(syncKey); }
   }
 
-  app.get('/api/inboxes', async (req, res) => res.json({ inboxes: runtimeFor(await actorFor(req)).listInboxes(), gmailConfigured: configured() }));
+  app.get('/api/inboxes', async (req, res) => { const actor = await actorFor(req); res.json(options.cloud?.enabled && actor ? await cloudGmail(options.cloud).status(actor, true) : { inboxes: runtimeFor(actor).listInboxes(), gmailConfigured: configured() }); });
   app.post('/api/inboxes/google/connect', async (req, res) => {
     const actor = await actorFor(req);
     if (actor && store.getMeta('activeCloudUser') !== actor.id) throw new HttpError(409, 'Activate this account on the device before connecting Gmail.');
+    const { inboxId } = z.object({ inboxId: z.string().min(1).max(100).optional() }).strict().parse(req.body ?? {});
+    if (options.cloud?.enabled && actor) { res.json(await cloudGmail(options.cloud).connect(actor, inboxId)); return; }
     if (!configured()) throw new HttpError(503, 'Google setup required. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to the local .env file and register the callback URL shown in Connections.');
     for (const [key, value] of pending) if (value.expiresAt < Date.now()) pending.delete(key);
     const state = randomBytes(32).toString('base64url');
@@ -236,6 +242,7 @@ export function attachEmailRoutes(app: Express, store: Store, options: { dataDir
     res.json({ url: `https://accounts.google.com/o/oauth2/v2/auth?${params}` });
   });
   app.get('/api/inboxes/google/callback', async (req, res) => {
+    if (options.cloud?.enabled) throw new HttpError(410, 'Gmail connections finish in your browser. Return to ApplyTrack to check the connection.');
     const state = typeof req.query.state === 'string' ? req.query.state : '';
     const cookieState = (req.get('cookie') ?? '').split(';').map(value => value.trim()).find(value => value.startsWith('apply_oauth_state='))?.slice('apply_oauth_state='.length);
     const entry = pending.get(state);
@@ -265,6 +272,7 @@ export function attachEmailRoutes(app: Express, store: Store, options: { dataDir
   app.delete('/api/inboxes/:id', async (req, res) => {
     const actor = await actorFor(req); const runtime = runtimeFor(actor);
     const id = String(req.params.id);
+    if (options.cloud?.enabled && actor) { await cloudGmail(options.cloud).disconnect(actor, id); res.sendStatus(204); return; }
     if (!runtime.getMeta(`inbox:${id}`)) throw new HttpError(404, 'Inbox not found.');
     const encrypted = runtime.getMeta<string>(`inbox-token:${id}`);
     runtime.deleteMeta(`inbox:${id}`); runtime.deleteMeta(`inbox-token:${id}`);
@@ -311,7 +319,7 @@ export function attachEmailRoutes(app: Express, store: Store, options: { dataDir
   });
 
   const timer = options.poll === false ? null : setInterval(() => {
-    if (stopped || !configured()) return;
+    if (stopped || options.cloud?.enabled || !configured()) return;
     void (async () => {
       const actor = options.cloud?.enabled ? await options.cloud.activeActor() : null;
       for (const inbox of runtimeFor(actor).listInboxes()) void syncInbox(inbox.id, actor).catch(() => {});

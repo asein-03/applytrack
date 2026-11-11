@@ -9,6 +9,7 @@ import { seedDemo } from './seed.js';
 import { CloudService, WorkspaceRepository, type CloudActor } from './cloud.js';
 import { attachLibraryRoutes } from './library.js';
 import { attachReminderRoutes } from './reminders.js';
+import { cloudGmail } from './gmail-cloud.js';
 import { createProtectedVault } from './vault.js';
 import { archiveDocument, attachmentFilename, downloadDocument, drainDocumentDeletions, MAX_COPY_BYTES, MAX_DOCUMENT_BYTES, prepareDocumentCapture } from './documents.js';
 
@@ -177,7 +178,8 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
   app.delete('/api/sessions/current', async (req, res) => { runtimeFor(await actorFor(req)).stopSession(); res.sendStatus(204); });
   app.get('/api/settings', async (req, res) => {
     const actor = cloud.enabled && !req.get('authorization') ? null : await actorFor(req); const runtime = runtimeFor(actor);
-    res.json({ gmailConfigured: !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET, inboxes: cloud.enabled && !actor ? [] : runtime.listInboxes().map(safeInbox), extensionToken: cloud.enabled && (!actor || store.getMeta('activeCloudUser') !== actor.id) ? '' : store.getMeta('extensionToken'), session: cloud.enabled && !actor ? null : runtime.getSession(), cloud: { enabled: cloud.enabled, configured: cloud.configured, user: actor ? { id: actor.id, email: actor.email } : null } });
+    const gmail = cloud.enabled ? actor ? await cloudGmail(cloud).status(actor) : { gmailConfigured: false, inboxes: [], gmailSyncMode: 'cloud' } : { gmailConfigured: !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET, inboxes: runtime.listInboxes().map(safeInbox), gmailSyncMode: 'local' };
+    res.json({ ...gmail, extensionToken: cloud.enabled && (!actor || store.getMeta('activeCloudUser') !== actor.id) ? '' : store.getMeta('extensionToken'), session: cloud.enabled && !actor ? null : runtime.getSession(), cloud: { enabled: cloud.enabled, configured: cloud.configured, user: actor ? { id: actor.id, email: actor.email } : null } });
   });
   app.get('/api/pairing', async (req, res) => { const actor = await actorFor(req); if (actor && store.getMeta('activeCloudUser') !== actor.id) throw new HttpError(409, 'Activate this account on the device before pairing.'); res.json({ token: store.getMeta('extensionToken') }); });
   app.post('/api/events', async (req, res) => {

@@ -44,11 +44,15 @@ export interface TrackingSession {
   browserEnabled: boolean; screenEnabled: boolean;
 }
 export interface Inbox {
-  id: string; provider: 'gmail'; email: string; status: 'connected' | 'error';
-  lastSyncAt: string | null; error: string | null;
+  id: string; provider: 'gmail'; email: string; status: 'connected' | 'error' | 'reconnect_required';
+  lastSyncAt: string | null; error: string | null; connectedAt?: string; syncing?: boolean;
 }
-export interface Settings {
-  gmailConfigured: boolean; inboxes: Inbox[]; extensionToken: string;
+export interface GmailStatus {
+  gmailConfigured: boolean; inboxes: Inbox[]; gmailSyncMode?: 'cloud' | 'local'; gmailStatusError?: string | null;
+}
+export interface GmailSyncResult { syncing?: boolean; imported?: number; queued?: number; processed?: number; more?: boolean; }
+export interface Settings extends GmailStatus {
+  extensionToken: string;
   session: TrackingSession | null;
   cloud?: { enabled: boolean; configured: boolean; user: { id: string; email: string | null } | null };
 }
