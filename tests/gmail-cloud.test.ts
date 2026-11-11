@@ -28,7 +28,8 @@ test('upstream errors are sanitized and do not break ordinary workspace settings
   const status = await client.status(actor);
   assert.match(status.gmailStatusError!, /status is unavailable/); assert.equal(status.gmailConfigured, false);
   await assert.rejects(client.connect(actor), error => error instanceof Error && /not available/.test(error.message) && !error.message.includes('secret-token-value'));
-  for (const url of ['javascript:alert(1)', 'https://accounts.google.com.evil.test/o/oauth2/v2/auth', 'https://user' + '@accounts.google.com/o/oauth2/v2/auth', 'invalid', authorizationUrl.replace('/auth/', '/other/'), authorizationUrl + '&redirect=https://example.invalid', authorizationUrl + '#token', authorizationUrl.replace('asein-03.github.io', 'evil.example.invalid')]) {
+  const withCredentials = new URL(authorizationUrl); withCredentials.username = 'synthetic-user';
+  for (const url of ['javascript:alert(1)', 'https://accounts.google.com.evil.test/o/oauth2/v2/auth', withCredentials.href, 'invalid', authorizationUrl.replace('/auth/', '/other/'), authorizationUrl + '&redirect=https://example.invalid', authorizationUrl + '#token', authorizationUrl.replace('asein-03.github.io', 'evil.example.invalid')]) {
     const unsafe = new CloudGmail(cloud, async () => Response.json({ url }));
     await assert.rejects(unsafe.connect(actor), /invalid connection link/);
   }
