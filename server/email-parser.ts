@@ -66,11 +66,15 @@ export function matchEmail(mail: IncomingEmail, applications: Application[]): Ap
   return matches.length === 1 ? matches[0] : null;
 }
 
-export function emailEvent(mail: IncomingEmail, application: Application): CaptureEvent {
+export function emailEvent(mail: IncomingEmail, application: Application, options: { reviewedByUser?: boolean } = {}): CaptureEvent {
+  const classified = classifyEmail(mail);
   return {
-    ...classifyEmail(mail), applicationId: application.id, workspace: application.workspace,
+    ...classified,
+    // Message wording and sender headers are not proof of employer identity.
+    requiresReview: classified.requiresReview || (!!mail.inboxId && !options.reviewedByUser),
+    applicationId: application.id, workspace: application.workspace,
     source: 'email', sourceId: `email:${mail.inboxId ?? 'import'}:${mail.id}`,
-    observedAt: mail.receivedAt, excerpt: `${mail.subject}\n${newestEmailText(mail.body)}`.slice(0, 8000),
+    observedAt: mail.receivedAt, excerpt: `${mail.inboxId ? `From: ${mail.from}\n` : ''}${mail.subject}\n${newestEmailText(mail.body)}`.slice(0, 8000),
     url: mail.inboxId ? `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(mail.recipient ?? '')}#all/${encodeURIComponent(mail.id)}` : undefined,
   };
 }

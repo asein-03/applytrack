@@ -9,7 +9,7 @@ import { attachEmailRoutes, extractBody } from '../server/email.js';
 import { explicitDeadline } from '../server/email-parser.js';
 import type { Application, Evidence } from '../shared/types.js';
 
-async function withEmailServer(run: (api: (path: string, options?: RequestInit) => Promise<Response>) => Promise<void>) {
+async function withEmailServer(run: (api: (path: string, options?: RequestInit) => Promise<Response>, store: ReturnType<typeof createApp>['store']) => Promise<void>) {
   const directory = mkdtempSync(join(tmpdir(), 'applytrack-email-'));
   const { app, store, close } = createApp({ dbPath: ':memory:' });
   const email = attachEmailRoutes(app, store, { dataDir: directory, poll: false });
@@ -18,7 +18,7 @@ async function withEmailServer(run: (api: (path: string, options?: RequestInit) 
   await new Promise<void>(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const api = (path: string, options: RequestInit = {}) => fetch(base + '/api' + path, { ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers } });
-  try { await run(api); }
+  try { await run(api, store); }
   finally { email.stop(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); close(); rmSync(directory, { recursive: true, force: true }); }
 }
 const post = (value: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(value) });
@@ -58,6 +58,22 @@ test('identical imported emails remain isolated in personal and demo review queu
     assert.equal((await (await api('/email/review?workspace=personal')).json()).items.length, 1);
     assert.equal((await api(`/email/review/${personal.id}`, { method: 'DELETE' })).status, 204);
     assert.equal((await (await api('/email/review?workspace=demo')).json()).items.length, 1);
+  });
+});
+
+test('explicit assignment applies a queued remote message once', async () => {
+  await withEmailServer(async (api, store) => {
+    const application = await (await api('/applications', post({ company: 'Northstar', role: 'Analyst' }))).json() as Application;
+    store.setMeta('email-review:remote-review', { id: 'remote-review', originalId: 'remote-message', subject: 'Assessment invitation', from: 'unverified@example.test', body: 'Please complete your assessment. Deadline: 2026-11-14', receivedAt: new Date().toISOString(), workspace: 'personal', inboxId: 'synthetic-inbox' });
+    assert.equal((await (await api(`/applications/${application.id}`)).json()).stage, 'saved');
+    const response = await api('/email/review/remote-review/assign', post({ applicationId: application.id }));
+    assert.equal(response.status, 200);
+    const accepted = await response.json();
+    assert.equal(accepted.evidence.review, 'accepted');
+    assert.equal(accepted.application.stage, 'assessment');
+    assert.equal(accepted.application.tasks.length, 1);
+    assert.equal((await api('/email/review/remote-review/assign', post({ applicationId: application.id }))).status, 404);
+    assert.equal((await (await api(`/applications/${application.id}`)).json()).tasks.length, 1);
   });
 });
 

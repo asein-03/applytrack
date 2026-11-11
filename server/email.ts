@@ -145,7 +145,7 @@ export function attachEmailRoutes(app: Express, store: Store, options: { dataDir
     if (applicationId && !application) throw new HttpError(404, 'Application not found.');
     if (!application) return queue(data, mail);
     if (application.workspace !== mail.workspace) throw new HttpError(409, 'Choose an application in the same workspace.');
-    return ingestEvent(data, emailEvent(mail, application));
+    return ingestEvent(data, emailEvent(mail, application, { reviewedByUser: applicationId !== undefined }));
   };
 
   async function accessToken(runtime: Store, inboxId: string): Promise<string> {
