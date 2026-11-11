@@ -13,7 +13,7 @@ export interface WorkspaceState {
   processed: Array<{ source: string; workspace: string; source_id: string; application_id: string; evidence_id: string }>;
 }
 export const DOCUMENT_BUCKET = 'apply-documents';
-const stateMetadata = /^(evidence-task:|evidence-document:|email-review:|email-seen:|document-deletion:|deleted-event:)/;
+const stateMetadata = /^(evidence-task:|evidence-document:|email-review:|email-seen:|document-deletion:|deleted-event:|document-label:|reminder:)/;
 export const emptyWorkspace = (): WorkspaceState => ({ version: 1, applications: [], metadata: [], processed: [] });
 
 export function exportWorkspace(store: Store): WorkspaceState {

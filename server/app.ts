@@ -7,6 +7,8 @@ import { HttpError, Store } from './store.js';
 import { ingestEvent, reviewEvidence } from './events.js';
 import { seedDemo } from './seed.js';
 import { CloudService, WorkspaceRepository, type CloudActor } from './cloud.js';
+import { attachLibraryRoutes } from './library.js';
+import { attachReminderRoutes } from './reminders.js';
 import { archiveDocument, attachmentFilename, downloadDocument, drainDocumentDeletions, MAX_COPY_BYTES, MAX_DOCUMENT_BYTES, prepareDocumentCapture } from './documents.js';
 
 const text = (limit = 500) => z.string().trim().max(limit);
@@ -109,7 +111,8 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
       response.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
       response.sendStatus(204); return;
     }
-    if (fromExtension && !tokenValid) { response.status(401).json({ error: 'Pair the browser extension with your tracker first.' }); return; }
+    const publicHealth = request.method === 'GET' && request.originalUrl.split('?')[0] === '/api/health';
+    if (fromExtension && !tokenValid && !publicHealth) { response.status(401).json({ error: 'Pair the browser extension with your tracker first.' }); return; }
     // Google redirects through a cross-site top-level GET. Its route separately
     // verifies the short-lived, one-use state, browser cookie and PKCE verifier.
     const oauthCallback = request.method === 'GET' && request.originalUrl.split('?')[0] === '/api/inboxes/google/callback';
@@ -122,7 +125,7 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
   app.use('/api', express.json({ limit: '3mb' }));
   const getWorkspace = (query: unknown): Workspace => workspace.parse(query ?? 'personal');
 
-  app.get('/api/health', (_req, res) => res.json({ ok: true }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, dashboardUrl: configuredOrigin && allowedOrigins.has(configuredOrigin) ? configuredOrigin : 'http://localhost:5173' }));
   app.get('/api/cloud/config', (_req, res) => res.json(cloud.config()));
   app.post('/api/cloud/session', async (req, res) => {
     if (!cloud.enabled) throw new HttpError(409, 'Cloud accounts are disabled in local test mode.');
@@ -215,8 +218,10 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
     res.type('text/csv').setHeader('Content-Disposition', 'attachment; filename="applications.csv"');
     res.send('\uFEFF' + [headers, ...rows].map(row => row.map(csvCell).join(',')).join('\r\n'));
   });
+  attachLibraryRoutes(app, store, { cloud, repository });
+  const reminders = attachReminderRoutes(app, store, { cloud, repository });
   app.use(apiErrorHandler);
-  return { app, store, cloud, repository, close: () => store.close() };
+  return { app, store, cloud, repository, reminders, close: () => store.close() };
 }
 
 function safeInbox(inbox: Inbox): Inbox {
