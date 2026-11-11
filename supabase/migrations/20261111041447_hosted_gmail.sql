@@ -260,6 +260,7 @@ grant execute on function public.apply_gmail_store(text,jsonb) to service_role;
 -- Vault holds the scheduler credential. Only the database owner can dispatch it.
 -- The request queue contains HTTP headers transiently, so it is not client-readable.
 revoke all on net.http_request_queue, net._http_response from public, anon, authenticated;
+revoke all on vault.secrets, vault.decrypted_secrets from public, anon, authenticated;
 create function private.apply_dispatch_gmail()
 returns bigint language plpgsql security definer set search_path = '' as $$
 declare v_secret text; v_request bigint;

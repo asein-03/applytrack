@@ -1,0 +1,6 @@
+project_id = "applytrack"
+
+[functions.gmail]
+verify_jwt = false
+entrypoint = "./functions/gmail/index.ts"
+import_map = "./functions/gmail/deno.json"

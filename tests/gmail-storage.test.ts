@@ -52,7 +52,9 @@ before(async () => {
     create table net._http_response(id bigint);
     grant select on net.http_request_queue,net._http_response to public,anon,authenticated;
     create function net.http_post(url text,headers jsonb,body jsonb,timeout_milliseconds integer) returns bigint language sql as $$select 42::bigint$$;
+    create table vault.secrets(name text,secret text);
     create table vault.decrypted_secrets(name text,decrypted_secret text);
+    grant select on vault.secrets,vault.decrypted_secrets to public,anon,authenticated;
   `);
   const migration = await readFile(new URL('../supabase/migrations/20261111041447_hosted_gmail.sql', import.meta.url), 'utf8');
   // pg_net performs outbound HTTP, unavailable in the embedded PostgreSQL engine.
@@ -68,12 +70,14 @@ after(async () => { await db.close(); });
 
 test('private Gmail tables, dispatcher, and RPC are inaccessible to application roles', async () => {
   for (const role of ['anon', 'authenticated']) {
-    const result = await db.query<{ rpc: boolean; dispatch: boolean; table_read: boolean; queue_read: boolean }>(`select
+    const result = await db.query<{ rpc: boolean; dispatch: boolean; table_read: boolean; queue_read: boolean; vault_read: boolean; vault_encrypted_read: boolean }>(`select
       has_function_privilege($1,'public.apply_gmail_store(text,jsonb)','execute') as rpc,
       has_function_privilege($1,'private.apply_dispatch_gmail()','execute') as dispatch,
       has_table_privilege($1,'private.apply_gmail_connections','select') as table_read,
-      has_table_privilege($1,'net.http_request_queue','select') as queue_read`, [role]);
-    assert.deepEqual(result.rows[0], { rpc: false, dispatch: false, table_read: false, queue_read: false });
+      has_table_privilege($1,'net.http_request_queue','select') as queue_read,
+      has_table_privilege($1,'vault.decrypted_secrets','select') as vault_read,
+      has_table_privilege($1,'vault.secrets','select') as vault_encrypted_read`, [role]);
+    assert.deepEqual(result.rows[0], { rpc: false, dispatch: false, table_read: false, queue_read: false, vault_read: false, vault_encrypted_read: false });
   }
   await db.exec(`select set_config('request.jwt.claims','{"role":"authenticated"}',false)`);
   await assert.rejects(rpc('status', identity), code('42501'));
