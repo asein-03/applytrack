@@ -1,16 +1,37 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+
+const protectedKeys = new Map<string, Buffer>();
+export function registerProtectedVaultKey(directory: string, key: Buffer) {
+  if (key.length !== 32) throw new Error('Invalid protected mailbox encryption key.');
+  const path = resolve(directory), previous = protectedKeys.get(path);
+  if (previous && !previous.equals(key)) throw new Error('The protected mailbox key is already initialized.');
+  if (!previous) protectedKeys.set(path, Buffer.from(key));
+}
+export function createProtectedVault(directory: string) {
+  if (!protectedKeys.has(resolve(directory))) throw new Error('Secure runtime storage must be unlocked by the desktop app.');
+  return createVault(directory);
+}
 
 export function createVault(directory: string) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (lstatSync(directory).isSymbolicLink()) throw new Error('The mailbox storage directory cannot be a symbolic link.');
+  chmodSync(directory, 0o700);
   const filename = join(directory, 'mail-key');
-  let key: Buffer;
-  try { key = readFileSync(filename); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    key = randomBytes(32);
-    writeFileSync(filename, key, { mode: 0o600, flag: 'wx' });
+  let key = protectedKeys.get(resolve(directory));
+  if (!key) {
+    if (existsSync(join(directory, 'mail-key.os'))) throw new Error('Open the desktop app to unlock the mailbox encryption key.');
+    try {
+      const file = openSync(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try { const stat = fstatSync(file); if (!stat.isFile() || stat.nlink !== 1 || stat.size !== 32) throw new Error('Invalid local mailbox encryption key.'); key = readFileSync(file); }
+      finally { closeSync(file); }
+      chmodSync(filename, 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      key = randomBytes(32);
+      writeFileSync(filename, key, { mode: 0o600, flag: 'wx' });
+    }
   }
   if (key.length !== 32) throw new Error('Invalid local mailbox encryption key.');
   return {

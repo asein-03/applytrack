@@ -14,45 +14,114 @@ const configured = () => !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_C
 const oauthUrl = 'https://oauth2.googleapis.com/token';
 const gmailUrl = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-const decode = (value?: string) => value ? Buffer.from(value, 'base64url').toString('utf8') : '';
+const MAX_BODY_BYTES = 64_000;
+const MAX_MIME_PARTS = 200;
+const MAX_GOOGLE_JSON_BYTES = 2 * 1024 * 1024;
+type BodyBudget = { bytes: number; parts: number };
 
 export function extractBody(part: GmailPart, depth = 0): string {
-  if (depth > 20 || part.filename) return '';
-  if (part.mimeType === 'text/plain') return decode(part.body?.data);
+  return extractPart(part, depth, { bytes: MAX_BODY_BYTES, parts: MAX_MIME_PARTS });
+}
+function decodePart(value: string | undefined, budget: BodyBudget): string {
+  if (typeof value !== 'string' || !budget.bytes) return '';
+  const bytes = Buffer.from(value.slice(0, Math.ceil(budget.bytes / 3) * 4), 'base64url').subarray(0, budget.bytes);
+  budget.bytes -= bytes.length;
+  return bytes.toString('utf8');
+}
+function extractPart(part: GmailPart, depth: number, budget: BodyBudget): string {
+  if (depth > 20 || !part || typeof part !== 'object' || !budget.parts || !budget.bytes) return '';
+  budget.parts--;
+  if (part.filename) return '';
+  if (part.mimeType === 'text/plain') return decodePart(part.body?.data, budget);
+  const children = Array.isArray(part.parts) ? part.parts.slice(0, MAX_MIME_PARTS) : [];
   if (part.mimeType === 'multipart/alternative') {
-    // Alternative representations describe the same message, not separate text.
-    for (const child of part.parts ?? []) {
-      if (child.mimeType === 'text/plain') { const text = extractBody(child, depth + 1); if (text.trim()) return text; }
+    for (const child of children) {
+      if (!budget.parts || !budget.bytes) break;
+      if (child?.mimeType === 'text/plain') { const text = extractPart(child, depth + 1, budget); if (text.trim()) return text; }
     }
-    for (const child of part.parts ?? []) { const text = extractBody(child, depth + 1); if (text.trim()) return text; }
+    for (const child of children) {
+      if (!budget.parts || !budget.bytes) break;
+      if (child?.mimeType === 'text/plain') continue;
+      const text = extractPart(child, depth + 1, budget); if (text.trim()) return text;
+    }
     return '';
   }
-  const children = (part.parts ?? []).map(child => extractBody(child, depth + 1)).filter(Boolean).join('\n');
-  if (children) return children;
-  if (part.mimeType === 'text/html') return removeQuotedHtml(decode(part.body?.data))
-    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
-    .replace(/<a\b[^>]*href=["'](https:\/\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, '$2 $1')
-    .replace(/<\/(?:p|div|li|br)>|<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+  const texts: string[] = [];
+  for (const child of children) {
+    if (!budget.parts || !budget.bytes) break;
+    const text = extractPart(child, depth + 1, budget); if (text) texts.push(text);
+  }
+  if (texts.length) return texts.join('\n');
+  if (part.mimeType === 'text/html') return htmlText(decodePart(part.body?.data, budget));
   return '';
 }
 
-function removeQuotedHtml(html: string): string {
-  // Strip inner quotes before outer quotes so old outcomes cannot classify a
-  // new reply. A bounded loop also handles common nested Gmail reply chains.
-  let value = html;
-  for (let depth = 0; depth < 20; depth++) {
-    const next = value.replace(/<blockquote\b[^>]*>(?:(?!<blockquote\b)[\s\S])*?<\/blockquote\s*>/gi, '');
-    if (next === value) break;
-    value = next;
+function htmlText(html: string): string {
+  const lower = html.toLowerCase();
+  const text: string[] = [];
+  const links: string[] = [];
+  let cursor = 0; let quotes = 0; let raw: string | null = null;
+  while (cursor < html.length) {
+    if (raw) {
+      let end = lower.indexOf(`</${raw}`, cursor);
+      while (end >= 0 && !/[\s/>]/.test(lower[end + raw.length + 2] || '')) end = lower.indexOf(`</${raw}`, end + raw.length + 2);
+      if (end < 0) break;
+      cursor = end; raw = null;
+    }
+    const start = html.indexOf('<', cursor);
+    if (!quotes) text.push(html.slice(cursor, start < 0 ? html.length : start));
+    if (start < 0) break;
+    if (html.startsWith('<!--', start)) {
+      const end = html.indexOf('-->', start + 4);
+      if (end < 0) break;
+      cursor = end + 3; continue;
+    }
+    let end = start + 1; let quote = '';
+    for (; end < html.length; end++) {
+      const character = html[end];
+      if (quote) { if (character === quote) quote = ''; }
+      else if (character === '"' || character === "'") quote = character;
+      else if (character === '>') break;
+    }
+    if (end === html.length) break;
+    cursor = end + 1;
+    const tag = html.slice(start + 1, end);
+    const match = /^\s*(\/?)\s*([a-z][a-z0-9]*)\b/i.exec(tag);
+    if (!match) continue;
+    const closing = !!match[1]; const name = match[2].toLowerCase();
+    if (name === 'script' || name === 'style') { if (!closing) raw = name; continue; }
+    if (name === 'blockquote') { quotes = Math.max(0, quotes + (closing ? -1 : 1)); continue; }
+    if (quotes) continue;
+    if (name === 'a') {
+      if (closing) { const link = links.pop(); if (link) text.push(` ${link}`); }
+      else {
+        const href = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);
+        const value = href?.[1] ?? href?.[2] ?? '';
+        links.push(/^https:\/\/[^\s<>"']+$/i.test(value) ? value : '');
+      }
+    }
+    if (name === 'br' || (closing && ['p', 'div', 'li'].includes(name))) text.push('\n');
+    else if (name !== 'a') text.push(' ');
   }
-  return value;
+  return text.join('').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
 }
 
 async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(url, { ...init, signal: AbortSignal.timeout(20000) });
   if (!response.ok) throw new HttpError(502, `Google request failed (${response.status}). Reconnect the inbox if access has expired.`);
-  return response.json() as Promise<T>;
+  const reader = response.body?.getReader();
+  if (!reader) throw new HttpError(502, 'Google returned an empty response. Try again.');
+  const chunks: Uint8Array[] = []; let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break;
+      length += value.byteLength;
+      if (length > MAX_GOOGLE_JSON_BYTES) { await reader.cancel(); throw new HttpError(502, 'Google returned a response larger than 2 MB. Review the message in Gmail before syncing again.'); }
+      chunks.push(value);
+    }
+    try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) as T; }
+    catch { throw new HttpError(502, 'Google returned an invalid response. Try again.'); }
+  } finally { reader.releaseLock(); }
 }
 
 export function attachEmailRoutes(app: Express, store: Store, options: { dataDir: string; poll?: boolean; cloud?: CloudService; repository?: WorkspaceRepository }) {
@@ -76,7 +145,7 @@ export function attachEmailRoutes(app: Express, store: Store, options: { dataDir
     if (applicationId && !application) throw new HttpError(404, 'Application not found.');
     if (!application) return queue(data, mail);
     if (application.workspace !== mail.workspace) throw new HttpError(409, 'Choose an application in the same workspace.');
-    return ingestEvent(data, emailEvent(mail, application));
+    return ingestEvent(data, emailEvent(mail, application, { reviewedByUser: applicationId !== undefined }));
   };
 
   async function accessToken(runtime: Store, inboxId: string): Promise<string> {

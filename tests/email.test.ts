@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { classifyEmail, explicitDeadline, matchEmail, type IncomingEmail } from '../server/email-parser.js';
+import { classifyEmail, emailEvent, explicitDeadline, matchEmail, type IncomingEmail } from '../server/email-parser.js';
 import { createVault } from '../server/vault.js';
+import { Store } from '../server/store.js';
+import { ingestEvent, reviewEvidence } from '../server/events.js';
 import type { Application } from '../shared/types.js';
 const mail = (body: string): IncomingEmail => ({ id: 'test', subject: '', body, from: '', receivedAt: '2026-11-10T17:00:00Z', workspace: 'personal' });
 test('assessment invitation is distinct from completion and interview', () => {
@@ -57,4 +59,36 @@ test('tokens survive reload encrypted and reject tampering', () => {
     const tampered = Buffer.from(encrypted, 'base64'); tampered[tampered.length - 1] ^= 1;
     assert.throws(() => createVault(dir).decrypt(tampered.toString('base64')));
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('remote sender claims cannot change stages or create tasks without user review', () => {
+  const store = new Store(':memory:');
+  try {
+    const application = store.createApplication({ company: 'Northstar', role: 'Data Analyst', stage: 'applied', recruiterEmail: 'hiring@northstar.example' });
+    for (const from of ['attacker@example.test', 'hiring@northstar.example', 'Northstar Recruiting <hiring@northstar.example>']) {
+      const remote: IncomingEmail = { ...mail('We are not moving forward. Authentication-Results: mx.google.com; dkim=pass; spf=pass'), id: from, subject: 'Northstar Data Analyst application', from, inboxId: 'synthetic-inbox' };
+      assert.equal(matchEmail(remote, [application])?.id, application.id);
+      const captured = ingestEvent(store, emailEvent(remote, application));
+      assert.equal(captured.evidence.review, 'pending');
+      assert.equal(captured.application.stage, 'applied');
+      assert.match(captured.evidence.excerpt!, /^From:/);
+      reviewEvidence(store, captured.evidence.id, 'dismiss');
+      const replayed = ingestEvent(store, emailEvent(remote, application));
+      assert.equal(replayed.evidence.id, captured.evidence.id);
+      assert.equal(replayed.evidence.review, 'dismissed');
+      assert.equal(replayed.application.stage, 'applied');
+    }
+    const assessment = { ...mail('Please complete your assessment. Deadline: 2026-11-14. https://attacker.example.test/test'), id: 'remote-assessment', subject: 'Northstar Data Analyst assessment', from: 'hiring@northstar.example', inboxId: 'synthetic-inbox' };
+    const captured = ingestEvent(store, emailEvent(assessment, application));
+    assert.equal(captured.evidence.review, 'pending');
+    assert.equal(captured.application.stage, 'applied');
+    assert.equal(captured.application.tasks.length, 0);
+    const accepted = reviewEvidence(store, captured.evidence.id, 'accept');
+    assert.equal(accepted.stage, 'assessment');
+    assert.equal(accepted.tasks.length, 1);
+    const replayed = ingestEvent(store, emailEvent(assessment, application));
+    assert.equal(replayed.evidence.review, 'accepted');
+    assert.equal(replayed.application.tasks.length, 1);
+    assert.equal(replayed.application.evidence.filter(item => item.sourceId === captured.evidence.sourceId).length, 1);
+  } finally { store.close(); }
 });

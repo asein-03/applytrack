@@ -49,12 +49,12 @@ test('workspace switching remains available on a phone after adding an applicati
   } finally { await request.delete(`/api/applications/${application.id}`); }
 });
 
-test('all four navigation controls retain accessible names at tablet width', async ({ page }) => {
+test('all five navigation controls retain accessible names at tablet width', async ({ page }) => {
   await page.setViewportSize({ width: 640, height: 900 });
   await page.addInitScript(() => localStorage.setItem('apply.workspace', 'demo'));
   await page.goto('/');
   const navigation = page.getByRole('navigation', { name: 'Main navigation' });
-  for (const name of ['Overview', 'Applications', 'Tasks', 'Connections']) {
+  for (const name of ['Overview', 'Applications', 'Documents', 'Tasks', 'Connections']) {
     const control = navigation.getByRole('button', { name, exact: true });
     await expect(control).toBeVisible();
     await expect(control).toHaveAccessibleName(name);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowClockwise, CaretDown, CaretRight, Check, Cloud, Copy, DownloadSimple, EnvelopeSimple, FileText, LinkSimple, Plus, SignOut, Trash, UserCircle, WarningCircle } from '@phosphor-icons/react';
 import type { Application, Settings, Workspace } from '../shared/types';
 import { api } from './api';
@@ -15,9 +15,10 @@ function syncLabel(value: string | null) {
   return `Last checked ${date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
 }
 
-export default function Connections({ settings, applications, workspace, onChange, notify }: {
+export default function Connections({ settings, applications, workspace, onChange, notify, additionalSettings }: {
   settings: Settings | null; applications: Application[]; workspace: Workspace;
   onChange: () => void; notify: (message: string, error?: boolean) => void;
+  additionalSettings?: ReactNode;
 }) {
   const account = useCloudAccount();
   const [busy, setBusy] = useState('');
@@ -148,6 +149,7 @@ export default function Connections({ settings, applications, workspace, onChang
       <p className="cn-section-footnote">Screen capture is separate. Enable it from Start tracking in the dashboard.</p>
     </section>
 
+    {additionalSettings}
     <div className="cn-local-note"><Cloud size={19} /><p>{account.enabled ? 'Application records, document copies and confirmation snapshots are stored in your account.' : 'This test workspace stores application records on this computer.'}</p></div>
 
     <Modal open={importOpen} onClose={closeImport} title="Import an email" description="Paste a confirmation, assessment invitation or recruiter response." wide>

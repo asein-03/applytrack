@@ -9,7 +9,7 @@ import { attachEmailRoutes, extractBody } from '../server/email.js';
 import { explicitDeadline } from '../server/email-parser.js';
 import type { Application, Evidence } from '../shared/types.js';
 
-async function withEmailServer(run: (api: (path: string, options?: RequestInit) => Promise<Response>) => Promise<void>) {
+async function withEmailServer(run: (api: (path: string, options?: RequestInit) => Promise<Response>, store: ReturnType<typeof createApp>['store']) => Promise<void>) {
   const directory = mkdtempSync(join(tmpdir(), 'applytrack-email-'));
   const { app, store, close } = createApp({ dbPath: ':memory:' });
   const email = attachEmailRoutes(app, store, { dataDir: directory, poll: false });
@@ -18,7 +18,7 @@ async function withEmailServer(run: (api: (path: string, options?: RequestInit) 
   await new Promise<void>(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const api = (path: string, options: RequestInit = {}) => fetch(base + '/api' + path, { ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers } });
-  try { await run(api); }
+  try { await run(api, store); }
   finally { email.stop(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); close(); rmSync(directory, { recursive: true, force: true }); }
 }
 const post = (value: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(value) });
@@ -58,6 +58,22 @@ test('identical imported emails remain isolated in personal and demo review queu
     assert.equal((await (await api('/email/review?workspace=personal')).json()).items.length, 1);
     assert.equal((await api(`/email/review/${personal.id}`, { method: 'DELETE' })).status, 204);
     assert.equal((await (await api('/email/review?workspace=demo')).json()).items.length, 1);
+  });
+});
+
+test('explicit assignment applies a queued remote message once', async () => {
+  await withEmailServer(async (api, store) => {
+    const application = await (await api('/applications', post({ company: 'Northstar', role: 'Analyst' }))).json() as Application;
+    store.setMeta('email-review:remote-review', { id: 'remote-review', originalId: 'remote-message', subject: 'Assessment invitation', from: 'unverified@example.test', body: 'Please complete your assessment. Deadline: 2026-11-14', receivedAt: new Date().toISOString(), workspace: 'personal', inboxId: 'synthetic-inbox' });
+    assert.equal((await (await api(`/applications/${application.id}`)).json()).stage, 'saved');
+    const response = await api('/email/review/remote-review/assign', post({ applicationId: application.id }));
+    assert.equal(response.status, 200);
+    const accepted = await response.json();
+    assert.equal(accepted.evidence.review, 'accepted');
+    assert.equal(accepted.application.stage, 'assessment');
+    assert.equal(accepted.application.tasks.length, 1);
+    assert.equal((await api('/email/review/remote-review/assign', post({ applicationId: application.id }))).status, 404);
+    assert.equal((await (await api(`/applications/${application.id}`)).json()).tasks.length, 1);
   });
 });
 
@@ -104,4 +120,53 @@ test('deadline extraction preserves explicit timezones across UTC day boundaries
   assert.equal(explicitDeadline('Due: 2026-11-14T01:00:00+09:00'), '2026-11-14T01:00:00+09:00');
   assert.equal(explicitDeadline('Due: 2026-02-30T23:00:00-05:00'), null);
   assert.equal(explicitDeadline('Due: 2026-11-14T17:00:00'), null);
+});
+
+test('remote MIME and HTML parsing stops at bounded bytes and part counts', () => {
+  const encode = (value: string) => Buffer.from(value).toString('base64url');
+  const plain = { mimeType: 'text/plain', body: { data: encode('a'.repeat(80_000) + 'OUTSIDE_LIMIT') } };
+  assert.equal(extractBody(plain).length, 64_000);
+  assert.equal(extractBody({ mimeType: 'multipart/mixed', parts: Array.from({ length: 300 }, () => plain) }).length, 64_000);
+  const parts = Array.from({ length: 300 }, () => ({ mimeType: 'text/plain', body: { data: '' } }));
+  Object.defineProperty(parts[250], 'body', { get() { throw new Error('Visited a MIME part beyond the limit.'); } });
+  assert.equal(extractBody({ mimeType: 'multipart/mixed', parts }), '');
+  const malformed = '<script>'.repeat(48_000) + 'OUTSIDE_LIMIT';
+  assert.equal(extractBody({ mimeType: 'text/html', body: { data: encode(malformed) } }), '');
+});
+
+test('HTML extraction preserves useful links but excludes executable and quoted text', () => {
+  const html = '<p>Current message.</p><script>application rejected</script><style>application rejected</style><!-- application rejected --><blockquote>Old outcome<blockquote>Older outcome</blockquote></blockquote><a title="value > text" href="https://assessment.example.test/?a=1&amp;b=2">Assessment</a><a href="javascript:alert(1)">Unsafe link</a><p>End.</p>';
+  const text = extractBody({ mimeType: 'text/html', body: { data: Buffer.from(html).toString('base64url') } });
+  assert.match(text, /Current message\./);
+  assert.match(text, /Assessment https:\/\/assessment\.example\.test\/\?a=1&b=2/);
+  assert.match(text, /End\./);
+  assert.doesNotMatch(text, /rejected|Old outcome|Older outcome|javascript|alert\(1\)/);
+  assert.equal(extractBody({ mimeType: 'text/html', body: { data: Buffer.from('<script>inert</scripture>Also inert').toString('base64url') } }), '');
+});
+
+test('oversized and malformed Google responses stop safely without exposing response content', async () => {
+  const priorId = process.env.GOOGLE_CLIENT_ID; const priorSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const originalFetch = globalThis.fetch;
+  process.env.GOOGLE_CLIENT_ID = 'synthetic-client'; process.env.GOOGLE_CLIENT_SECRET = 'synthetic-client-secret';
+  try {
+    for (const body of ['x'.repeat(2 * 1024 * 1024 + 1), '{"access_token":"private-synthetic-token"']) {
+      globalThis.fetch = async (input, init) => String(input) === 'https://oauth2.googleapis.com/token' ? new Response(body, { status: 200 }) : originalFetch(input, init);
+      await withEmailServer(async api => {
+        const connected = await api('/inboxes/google/connect', post({}));
+        const { url } = await connected.json();
+        const state = new URL(url).searchParams.get('state');
+        const cookie = connected.headers.get('set-cookie')!.split(';')[0];
+        const response = await api(`/inboxes/google/callback?state=${state}&code=synthetic-code`, { headers: { Cookie: cookie } });
+        assert.equal(response.status, 502);
+        const error = await response.text();
+        assert.match(error, /larger than 2 MB|invalid response/);
+        assert.doesNotMatch(error, /private-synthetic-token|synthetic-client-secret/);
+        assert.deepEqual((await (await api('/inboxes')).json()).inboxes, []);
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (priorId === undefined) delete process.env.GOOGLE_CLIENT_ID; else process.env.GOOGLE_CLIENT_ID = priorId;
+    if (priorSecret === undefined) delete process.env.GOOGLE_CLIENT_SECRET; else process.env.GOOGLE_CLIENT_SECRET = priorSecret;
+  }
 });

@@ -13,7 +13,7 @@ export interface WorkspaceState {
   processed: Array<{ source: string; workspace: string; source_id: string; application_id: string; evidence_id: string }>;
 }
 export const DOCUMENT_BUCKET = 'apply-documents';
-const stateMetadata = /^(evidence-task:|evidence-document:|email-review:|email-seen:|document-deletion:|deleted-event:)/;
+const stateMetadata = /^(evidence-task:|evidence-document:|email-review:|email-seen:|document-deletion:|deleted-event:|document-label:|reminder:)/;
 export const emptyWorkspace = (): WorkspaceState => ({ version: 1, applications: [], metadata: [], processed: [] });
 
 export function exportWorkspace(store: Store): WorkspaceState {
@@ -55,6 +55,9 @@ export class CloudService {
   readonly configured: boolean;
   private vaultInstance?: ReturnType<typeof createVault>;
   private bindingGeneration = 0;
+  private bindingListeners = new Set<() => void>();
+  onBindingChanged(listener: () => void) { this.bindingListeners.add(listener); return () => { this.bindingListeners.delete(listener); }; }
+  private emitBindingChanged() { for (const listener of this.bindingListeners) listener(); }
   private refreshInFlight: Promise<CloudActor> | null = null;
   private get vault() { return this.vaultInstance ??= createVault(this.dataDir); }
   constructor(readonly runtime: Store, private dataDir: string, readonly enabled: boolean) {
@@ -76,7 +79,10 @@ export class CloudService {
     const client = this.client(accessToken);
     const { data, error } = await client.auth.getUser(accessToken);
     if (error && ![400, 401, 403, 404, 422].includes(error.status ?? 0)) throw new HttpError(503, 'Account verification is unavailable. Check your connection and retry.');
-    if (error || !data.user) throw new HttpError(401, 'Your Apply session expired. Sign in again.');
+    if (error || !data.user || !data.user.email_confirmed_at || data.user.is_anonymous) throw new HttpError(401, 'Your Apply session expired. Sign in again.');
+    const { data: active, error: sessionError } = await client.rpc('apply_has_active_session');
+    if (sessionError) throw new HttpError(503, 'Account verification is unavailable. Check your connection and retry.');
+    if (active !== true) throw new HttpError(401, 'Your Apply session expired. Sign in again.');
     return { id: data.user.id, email: data.user.email ?? null, accessToken, client };
   }
   private isPairToken(token: string) {
@@ -102,6 +108,7 @@ export class CloudService {
     const previousSession = previousEncrypted ? this.vault.decrypt<DeviceSession>(previousEncrypted) : null;
     this.runtime.setMeta(`cloud-session:${actor.id}`, this.vault.encrypt({ userId: actor.id, accessToken, refreshToken: refreshToken ?? previousSession?.refreshToken } satisfies DeviceSession));
     this.runtime.setMeta('activeCloudUser', actor.id);
+    if (previous !== actor.id) this.emitBindingChanged();
     return actor;
   }
   async activeActor(): Promise<CloudActor> {
@@ -153,6 +160,7 @@ export class CloudService {
     scopedRuntime(this.runtime, userId).stopSession();
     this.runtime.deleteMeta(`cloud-session:${userId}`); this.runtime.deleteMeta('activeCloudUser');
     this.runtime.setMeta('extensionToken', randomBytes(32).toString('hex'));
+    this.emitBindingChanged();
   }
   runtimeFor(actor: CloudActor) { return scopedRuntime(this.runtime, actor.id); }
 }

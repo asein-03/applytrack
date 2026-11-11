@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { createHash } from 'node:crypto';
+import { createHash, webcrypto } from 'node:crypto';
 
 type DocumentFile = { kind: string; name: string; size: number; mimeType: string; lastModified: number; sha256: string | null; contentBase64?: string };
 type Capture = { kind: string; sourceId: string; company: string; role: string; url: string; document?: DocumentFile; documents?: DocumentFile[] };
@@ -22,43 +22,71 @@ async function harness(page: Page, active = true) {
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let eventFailures = 0;
   let archiveFailures = 0;
+  let offline = false;
+  let committedFailures = 0;
+  let healthUrl = 'http://localhost:5173';
+  let timeOffset = 0;
+  let heldSession: Promise<number> | null = null;
+  let sessionHeld = false;
+  const openedUrls: string[] = [];
+  const remoteDocuments = new Map<string, any>();
   let listener: (message: Message, sender: any, respond: (value: any) => void) => void = () => {};
   const noopListener = { addListener: () => undefined };
-  const local = { token: 'test-pairing-token-only' };
-  const storage = (values: Record<string, unknown>) => ({
-    get: async (keys: string | string[] | null) => keys === null ? cleanCopy(values) : Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, values[key] ? cleanCopy(values[key]) : values[key]])),
-    set: async (next: Record<string, unknown>) => { Object.assign(values, cleanCopy(next)); },
-    remove: async (keys: string | string[]) => { for (const key of Array.isArray(keys) ? keys : [keys]) delete values[key]; },
+  let workerGeneration = 0;
+  const local: Record<string, any> = { token: 'test-pairing-token-only' };
+  const storage = (values: Record<string, unknown>, generation: number) => ({
+    get: async (keys: string | string[] | null) => { if (generation !== workerGeneration) return new Promise(() => {}); return keys === null ? cleanCopy(values) : Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, values[key] ? cleanCopy(values[key]) : values[key]])); },
+    set: async (next: Record<string, unknown>) => { if (generation !== workerGeneration) return new Promise(() => {}); Object.assign(values, cleanCopy(next)); },
+    remove: async (keys: string | string[]) => { if (generation !== workerGeneration) return new Promise(() => {}); for (const key of Array.isArray(keys) ? keys : [keys]) delete values[key]; },
     setAccessLevel: async () => {},
   });
-  runInNewContext(background, {
-    URL, AbortSignal, console,
-    setTimeout: (fn: () => void, delay: number) => { const timer = setTimeout(fn, delay); timers.add(timer); return timer; },
+  const startWorker = () => {
+    const generation = ++workerGeneration;
+    runInNewContext(background, {
+    URL, AbortSignal, console, crypto: webcrypto, TextEncoder,
+    Date: class extends Date { static now() { return Date.now() + timeOffset; } },
+    setTimeout: (fn: () => void, delay: number) => { const timer = setTimeout(() => { if (generation === workerGeneration) fn(); }, delay); timers.add(timer); return timer; },
     clearTimeout: (timer: ReturnType<typeof setTimeout>) => { clearTimeout(timer); timers.delete(timer); },
     chrome: {
-      storage: { local: storage(local), session: storage(saved) },
+      storage: { local: storage(local, generation), session: storage(saved, generation) },
       action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {}, setTitle: async ({ title }: { title: string }) => { titles.push(title); } },
       permissions: { contains: async () => true, getAll: async () => ({ origins: ['https://jobs.lever.co/*'] }), onAdded: noopListener, onRemoved: noopListener },
       scripting: { unregisterContentScripts: async () => {}, registerContentScripts: async () => {}, executeScript: async () => {} },
-      tabs: { query: async () => [], sendMessage: async () => {}, onRemoved: noopListener },
+      tabs: { create: async ({ url }: { url: string }) => { openedUrls.push(url); }, query: async () => [], sendMessage: async () => {}, onRemoved: noopListener },
       alarms: { create: () => {}, onAlarm: noopListener },
       runtime: { getURL: (path: string) => `chrome-extension://fixture/${path}`, onInstalled: noopListener, onStartup: noopListener, onMessage: { addListener: (fn: typeof listener) => { listener = fn; } } },
     },
     fetch: async (url: string, init: { body?: string }) => {
-      if (url.endsWith('/api/sessions/current')) return { ok: true, status: 200, json: async () => ({ session: cleanCopy(session) }) };
+      if (generation !== workerGeneration) return new Promise(() => {});
+      if (offline) throw new Error('Fixture network offline');
+      if (url.endsWith('/api/health')) return { ok: true, status: 200, json: async () => ({ ok: true, dashboardUrl: healthUrl }) };
+      if (url.endsWith('/api/sessions/current')) {
+        const gate = heldSession; heldSession = null;
+        if (gate) { sessionHeld = true; const status = await gate; return { ok: status === 200, status, json: async () => ({ session: cleanCopy(session), error: 'Previous account signed out' }) }; }
+        return { ok: true, status: 200, json: async () => ({ session: cleanCopy(session) }) };
+      }
       if (url.endsWith('/api/events')) {
         const event = JSON.parse(init.body!) as Capture;
         attempts.push(event);
         if (eventFailures > 0) { eventFailures--; return { ok: false, status: 503, json: async () => ({ error: 'Fixture temporarily unavailable' }) }; }
         if (archiveFailures > 0) { archiveFailures--; return { ok: true, status: 201, json: async () => ({ application: { id: 'fixture-application', documents: [{ stored: false }] }, evidence: {}, archiveError: 'The document name was recorded, but its cloud copy could not be saved.' }) }; }
         posted.push(event);
-        return { ok: true, status: 200, json: async () => ({ application: { id: 'fixture-application', documents: [{ stored: true }] }, evidence: {} }) };
+        if (event.kind === 'document_selected' && event.document) {
+          const key = `${event.url}:${event.document.sha256}`;
+          const previous = remoteDocuments.get(key);
+          const { contentBase64, ...metadata } = event.document;
+          remoteDocuments.set(key, { ...metadata, id: `document-${event.document.sha256}`, stored: contentBase64 !== undefined || previous?.stored || false });
+        }
+        if (committedFailures > 0) { committedFailures--; throw new Error('Response lost after cloud commit'); }
+        return { ok: true, status: 200, json: async () => ({ application: { id: 'fixture-application', documents: [...remoteDocuments.values()] }, evidence: { documentId: event.document ? `document-${event.document.sha256}` : undefined } }) };
       }
       throw new Error(`Unexpected fixture network request: ${url}`);
     },
-  });
-  const send = (message: Message, url = page.url(), frameId = 0) => new Promise<any>(respond => {
-    listener(message, { tab: { id: 77, url }, url, frameId }, respond);
+    });
+  };
+  startWorker();
+  const send = (message: Message, url = page.url(), frameId = 0, tabId = 77) => new Promise<any>(respond => {
+    listener(message, { tab: { id: tabId, url }, url, frameId }, respond);
   });
   await page.exposeBinding('__companionSend', ({ page: source }, message: Message) => send(message, source.url()));
   await page.addInitScript(() => {
@@ -83,7 +111,16 @@ async function harness(page: Page, active = true) {
     else await page.waitForTimeout(100);
   };
   const refresh = () => page.evaluate(() => Promise.all((window as any).__companionListeners.map((fn: any) => new Promise(resolve => fn({ type: 'refresh' }, {}, resolve)))));
-  return { saved, posted, attempts, titles, session, send, open, refresh,
+  return { saved, local, posted, attempts, titles, session, send, open, refresh, openedUrls,
+    popup: (message: Message) => new Promise<any>(respond => listener(message, { url: 'chrome-extension://fixture/popup.html' }, respond)),
+    restartWorker: () => { for (const timer of timers) clearTimeout(timer); timers.clear(); startWorker(); },
+    restartBrowser: () => { for (const timer of timers) clearTimeout(timer); timers.clear(); for (const key of Object.keys(saved)) delete saved[key]; startWorker(); },
+    setOffline: (value: boolean) => { offline = value; },
+    failAfterCommit: (count: number) => { committedFailures = count; },
+    setHealthUrl: (value: string) => { healthUrl = value; },
+    advanceTime: (milliseconds: number) => { timeOffset += milliseconds; },
+    holdNextSession: () => { let release!: (status: number) => void; sessionHeld = false; heldSession = new Promise(resolve => { release = resolve; }); return release; },
+    sessionIsHeld: () => sessionHeld,
     failEvents: (count: number) => { eventFailures = count; },
     failArchives: (count: number) => { archiveFailures = count; },
     dispose: () => { for (const timer of timers) clearTimeout(timer); },
@@ -237,7 +274,7 @@ test('temporary API failures retry the original bytes without persisting copies'
   const h = await setup(page);
   h.failEvents(1);
   await select(page, '#resume-upload', '%PDF-retry');
-  await expect.poll(() => h.titles.some(title => title.includes('waiting for the local app'))).toBe(true);
+  await expect.poll(() => h.titles.some(title => title.includes('waiting for the Apply app'))).toBe(true);
   expect(JSON.stringify(h.saved)).not.toContain('contentBase64');
   await expect.poll(() => selected(h).length, { timeout: 8_000 }).toBe(1);
   expect(h.attempts).toHaveLength(2);
@@ -275,10 +312,10 @@ test('ending a session discards waiting copies and a later session cannot replay
   const h = await setup(page);
   h.failEvents(1);
   await select(page, '#resume-upload', '%PDF-ended-session');
-  await expect.poll(() => h.titles.some(title => title.includes('waiting for the local app'))).toBe(true);
+  await expect.poll(() => h.titles.some(title => title.includes('waiting for the Apply app'))).toBe(true);
   h.session.browserEnabled = false;
   await h.refresh();
-  expect(h.saved).toEqual({});
+  expect(Object.keys(h.saved).filter(key => key.startsWith('context:'))).toEqual([]);
   const stopped = await h.send({ type: 'state' });
   expect(stopped.pendingCaptures).toBe(0);
   expect(stopped.captureError).toContain('Tracking ended');
@@ -339,7 +376,7 @@ test('partial HTTP 201 archive failures retain and retry the original copy until
   const h = await setup(page);
   h.failArchives(1);
   await select(page, '#resume-upload', '%PDF-partial-archive');
-  await expect.poll(() => h.titles.some(title => title.includes('waiting for the local app'))).toBe(true);
+  await expect.poll(() => h.titles.some(title => title.includes('waiting for the Apply app'))).toBe(true);
   const pending = await h.send({ type: 'state' });
   expect(pending.pendingCaptures).toBe(1);
   expect(JSON.stringify(h.saved)).not.toContain('contentBase64');
@@ -349,4 +386,255 @@ test('partial HTTP 201 archive failures retain and retry the original copy until
   expect(selected(h)[0].document?.contentBase64).toBe(Buffer.from('%PDF-partial-archive').toString('base64'));
   const complete = await h.send({ type: 'state' });
   expect(complete.pendingCaptures).toBe(0); expect(complete.captureError).toBeNull();
+});
+
+test('a worker restart recovers queued metadata and explicitly requests a lost file copy', async ({ page }) => {
+  const h = await setup(page);
+  h.failEvents(1);
+  await select(page, '#resume-upload', '%PDF-worker-recovery');
+  await expect.poll(() => h.saved['capture-journal-v1']?.pending?.length).toBe(1);
+  await expect.poll(() => h.attempts.length).toBe(1);
+  const originalId = h.attempts[0].sourceId;
+  expect(JSON.stringify(h.saved)).not.toContain('contentBase64');
+  expect(JSON.stringify(h.local)).not.toContain('resume.pdf');
+  h.restartWorker();
+  await h.popup({ type: 'retry-captures' });
+  await expect.poll(() => selected(h).length).toBe(1);
+  expect(selected(h)[0].sourceId).toBe(originalId);
+  expect(selected(h)[0].document?.contentBase64).toBeUndefined();
+  const recovered = await h.popup({ type: 'state' });
+  expect(recovered.pendingCaptures).toBe(0);
+  expect(recovered.captureStatus.state).toBe('attention');
+  expect(recovered.captureStatus.detail).toContain('copy is missing');
+  await clearFile(page, '#resume-upload');
+  await select(page, '#resume-upload', '%PDF-worker-recovery');
+  await expect.poll(() => selected(h).length).toBe(2);
+  const retried = await h.popup({ type: 'state' });
+  expect(retried.captureStatus.state).toBe('saved');
+  expect(retried.captureError).toBeNull();
+});
+
+test('a lost response followed by worker restart verifies the existing cloud copy without false failure', async ({ page }) => {
+  const h = await setup(page);
+  h.failAfterCommit(1);
+  await select(page, '#resume-upload', '%PDF-response-lost');
+  await expect.poll(() => h.attempts.length).toBe(1);
+  await expect.poll(() => h.saved['capture-journal-v1']?.pending?.length).toBe(1);
+  h.restartWorker();
+  await h.popup({ type: 'retry-captures' });
+  await expect.poll(() => h.attempts.length).toBe(2);
+  await expect.poll(async () => (await h.popup({ type: 'state' })).captureStatus.state).toBe('saved');
+  expect(h.attempts[1].sourceId).toBe(h.attempts[0].sourceId);
+  expect(h.attempts[1].document?.contentBase64).toBeUndefined();
+});
+
+test('browser restart preserves only an account-scoped interruption count until acknowledged', async ({ page }) => {
+  const h = await setup(page);
+  h.failEvents(1);
+  await select(page, '#resume-upload', '%PDF-browser-restart');
+  await expect.poll(() => h.local['capture-interruption-v1']?.pending).toBe(1);
+  expect(Object.keys(h.local['capture-interruption-v1']).sort()).toEqual(['attention', 'owner', 'pending', 'updatedAt']);
+  expect(JSON.stringify(h.local)).not.toContain('Northstar');
+  await expect.poll(() => h.attempts.length).toBe(1);
+  await expect.poll(async () => (await h.popup({ type: 'state' })).captureStatus.detail).toContain('waiting for the Apply app');
+  await page.goto('about:blank');
+  h.restartBrowser();
+  const interrupted = await h.popup({ type: 'state' });
+  expect(interrupted.captureStatus.state).toBe('attention');
+  expect(interrupted.captureStatus.detail).toContain('browser restarted with 1 unconfirmed capture');
+  expect(interrupted.pendingCaptures).toBe(0);
+  expect(interrupted.captureStatus.recent).toEqual([]);
+  h.restartWorker();
+  expect((await h.popup({ type: 'state' })).captureStatus.state).toBe('attention');
+  await h.popup({ type: 'dismiss-capture-error' });
+  expect(h.local['capture-interruption-v1']).toBeUndefined();
+});
+
+test('re-pairing cannot expose or replay an earlier account’s pending captures', async ({ page }) => {
+  const h = await setup(page);
+  h.failEvents(1);
+  await select(page, '#resume-upload', '%PDF-other-account');
+  await expect.poll(() => h.attempts.length).toBe(1);
+  const result = await h.popup({ type: 'pair', token: 'different-pairing-token-for-another-account' });
+  expect(result.ok).toBe(true);
+  expect(result.captureStatus.recent).toEqual([]);
+  expect(result.pendingCaptures).toBe(0);
+  expect(result.captureError).toBeNull();
+  h.restartWorker();
+  await h.popup({ type: 'retry-captures' });
+  expect(h.attempts).toHaveLength(1);
+  expect(JSON.stringify(h.saved)).not.toContain('other-account');
+});
+
+test('offline popup preserves save status and session metadata resumes when the connection returns', async ({ page }) => {
+  const h = await setup(page);
+  h.failEvents(1);
+  await select(page, '#resume-upload', '%PDF-offline');
+  await expect.poll(() => h.attempts.length).toBe(1);
+  h.setOffline(true);
+  const offline = await h.popup({ type: 'state' });
+  expect(offline.ok).toBe(true); expect(offline.connected).toBe(false);
+  expect(offline.pendingCaptures).toBe(1);
+  expect(offline.captureStatus.state).toBe('saving');
+  h.setOffline(false);
+  await h.popup({ type: 'retry-captures' });
+  await expect.poll(() => selected(h).length).toBe(1);
+  expect((await h.popup({ type: 'state' })).captureStatus.state).toBe('saved');
+});
+
+test('an interrupted file identification and an expired upload remain visible after restart', async ({ page }) => {
+  const h = await setup(page);
+  const context = { company: 'Northstar', role: 'Product Designer', url: page.url(), jobId: 'role-123' };
+  await h.send({ type: 'document-detected', sessionId: h.session.id, context, eventId: 'interrupted-detection',
+    document: { kind: 'resume', name: 'resume.pdf', size: 10, mimeType: 'application/pdf', lastModified: 0, sha256: null } });
+  expect((await h.popup({ type: 'state' })).captureStatus.state).toBe('detected');
+  h.restartWorker();
+  expect((await h.popup({ type: 'state' })).captureStatus.detail).toContain('File detection was interrupted');
+  await h.popup({ type: 'dismiss-capture-error' });
+  h.failEvents(1);
+  await select(page, '#resume-upload', '%PDF-expired');
+  await expect.poll(() => h.saved['capture-journal-v1']?.pending?.length).toBe(1);
+  h.saved['capture-journal-v1'].pending[0].createdAt = Date.now() - 6 * 60 * 1000;
+  h.restartWorker();
+  const expired = await h.popup({ type: 'state' });
+  expect(expired.pendingCaptures).toBe(0);
+  expect(expired.captureStatus.detail).toContain('expired before it was saved');
+});
+
+test('dashboard opening follows the app origin and refuses remote destinations', async ({ page }) => {
+  const h = await setup(page);
+  expect((await h.popup({ type: 'open-dashboard' })).ok).toBe(true);
+  expect(h.openedUrls).toEqual(['http://localhost:5173/']);
+  h.setHealthUrl('https://example.com');
+  expect((await h.popup({ type: 'open-dashboard' })).ok).toBe(false);
+  h.setHealthUrl('http://localhost:5173/account?token=unsafe');
+  expect((await h.popup({ type: 'open-dashboard' })).ok).toBe(false);
+  expect(h.openedUrls).toHaveLength(1);
+});
+
+test('two tabs recover their own application and file identities without crossing job context', async ({ page }) => {
+  const h = await setup(page);
+  const contexts = [
+    { company: 'Northstar', role: 'Product Designer', url: 'https://jobs.lever.co/northstar/role-123', jobId: 'role-123' },
+    { company: 'Eaststar', role: 'Design Engineer', url: 'https://jobs.lever.co/eaststar/role-456', jobId: 'role-456' },
+  ];
+  await h.send({ type: 'remember', context: contexts[1], sessionId: h.session.id }, contexts[1].url, 0, 88);
+  h.setOffline(true);
+  for (const [index, context] of contexts.entries()) {
+    const contents = `%PDF-tab-${index}`;
+    const document = { kind: 'resume', name: 'resume.pdf', size: contents.length, mimeType: 'application/pdf', lastModified: 0, sha256: digest(contents), contentBase64: Buffer.from(contents).toString('base64') };
+    const result = await h.send({ type: 'event', sessionId: h.session.id, event: { ...context, kind: 'document_selected', eventId: 'same-page-event-id', document } }, context.url, 0, index ? 88 : 77);
+    expect(result.ok).toBe(true);
+  }
+  await expect.poll(() => h.saved['capture-journal-v1']?.pending?.length).toBe(2);
+  h.restartWorker(); h.setOffline(false);
+  await expect.poll(() => selected(h).length).toBe(2);
+  expect(selected(h).map(event => [event.company, event.url, event.document?.sha256])).toEqual([
+    ['Northstar', contexts[0].url, digest('%PDF-tab-0')],
+    ['Eaststar', contexts[1].url, digest('%PDF-tab-1')],
+  ]);
+  expect(new Set(selected(h).map(event => event.sourceId)).size).toBe(2);
+  expect(h.saved['context:77'].jobId).toBe('role-123');
+  expect(h.saved['context:88'].jobId).toBe('role-456');
+});
+
+test('popup distinguishes a saved cloud copy, missing copy and disconnected pending save', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 760 });
+  await page.route('http://127.0.0.1:5173/extension-popup-fixture/**', route => {
+    const filename = new URL(route.request().url()).pathname.split('/').at(-1)!;
+    if (!['popup.html', 'popup.css', 'popup.js'].includes(filename)) return route.abort();
+    return route.fulfill({ contentType: filename.endsWith('.html') ? 'text/html' : filename.endsWith('.css') ? 'text/css' : 'text/javascript', body: readFileSync(resolve('extension', filename), 'utf8') });
+  });
+  await page.addInitScript(() => {
+    const state = window as any;
+    state.__popupState = { ok: true, paired: true, connected: true, session: { id: 'session-popup', browserEnabled: true }, pendingCaptures: 0, captureError: null,
+      captureStatus: { state: 'saved', detail: 'The file copy is saved in your account.', recent: [{ id: 'one', name: 'Résumé_Product_Designer_Version_2026_With_A_Long_Filename.pdf', state: 'saved', detail: 'The file copy is saved in your account.' }] } };
+    state.chrome = { runtime: { sendMessage: async () => state.__popupState }, permissions: { request: async () => true }, tabs: { create: () => {} } };
+  });
+  await page.goto('/extension-popup-fixture/popup.html');
+  await expect(page.locator('#capture-heading')).toHaveText('Saved');
+  await expect(page.locator('#capture-recent')).toContainText('Résumé_Product_Designer');
+  await expect(page.locator('#capture-retry')).toBeHidden();
+  expect(await page.locator('#capture-notice').evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+  await page.screenshot({ path: test.info().outputPath('capture-popup.png'), fullPage: true });
+  await page.evaluate(() => {
+    const state = (window as any).__popupState;
+    state.captureStatus.state = 'attention'; state.captureStatus.detail = 'File details were saved, but the copy is missing. Select the same file again to save it.';
+    state.captureStatus.recent[0].state = 'attention'; state.captureStatus.recent[0].detail = state.captureStatus.detail;
+  });
+  await expect(page.locator('#capture-heading')).toHaveText('Needs attention', { timeout: 5000 });
+  await expect(page.locator('#capture-notice')).toHaveAttribute('role', 'alert');
+  await expect(page.getByRole('button', { name: 'Dismiss', exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    const state = (window as any).__popupState;
+    state.connected = false; state.session = null; state.pendingCaptures = 1; state.connectionError = 'Open Apply to reconnect.';
+    state.captureStatus.state = 'saving'; state.captureStatus.detail = 'Waiting for Apply to reconnect.';
+  });
+  await expect(page.locator('#status')).toHaveText('Connection unavailable', { timeout: 5000 });
+  await expect(page.locator('#capture-heading')).toHaveText('Saving');
+  await expect(page.getByRole('button', { name: 'Start browser tracking' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Check saves' })).toBeVisible();
+});
+
+test('new successful captures never erase older unresolved failures from the bounded history', async ({ page }) => {
+  const h = await setup(page);
+  const context = { company: 'Northstar', role: 'Product Designer', url: page.url(), jobId: 'role-123' };
+  await h.send({ type: 'document-detected', sessionId: h.session.id, context, eventId: 'older-interrupted',
+    document: { kind: 'resume', name: 'missing.pdf', size: 10, mimeType: 'application/pdf', lastModified: 0, sha256: null } });
+  h.restartWorker();
+  expect((await h.popup({ type: 'state' })).captureStatus.state).toBe('attention');
+  for (let index = 0; index < 10; index++) {
+    await h.send({ type: 'event', sessionId: h.session.id, event: { ...context, kind: 'submission_pending', eventId: `new-capture-${index}`, documents: [] } });
+  }
+  await expect.poll(() => h.posted.length).toBe(10);
+  const result = await h.popup({ type: 'state' });
+  expect(result.captureStatus.recent.length).toBeLessThanOrEqual(8);
+  expect(result.captureStatus.state).toBe('attention');
+  expect(result.captureStatus.detail).toContain('Earlier captures need attention');
+  expect(h.local['capture-interruption-v1'].attention).toBe(true);
+});
+
+test('transient outages retain the original copy beyond five failures and expire even while disconnected', async ({ page }) => {
+  const h = await setup(page);
+  h.failEvents(6);
+  await select(page, '#resume-upload', '%PDF-long-outage');
+  await expect.poll(() => h.saved['capture-journal-v1']?.pending[0]?.attempts).toBe(1);
+  for (let attempts = 2; attempts <= 6; attempts++) {
+    h.advanceTime(15_000);
+    await h.popup({ type: 'retry-captures' });
+    await expect.poll(() => h.saved['capture-journal-v1']?.pending[0]?.attempts).toBe(attempts);
+  }
+  expect((await h.popup({ type: 'state' })).pendingCaptures).toBe(1);
+  await h.popup({ type: 'retry-captures' });
+  await expect.poll(() => selected(h).length).toBe(1);
+  expect(selected(h)[0].document?.contentBase64).toBe(Buffer.from('%PDF-long-outage').toString('base64'));
+  expect(new Set(h.attempts.map(event => event.sourceId)).size).toBe(1);
+  h.failEvents(1);
+  await select(page, '#resume-upload', '%PDF-expired-offline');
+  await expect.poll(() => h.saved['capture-journal-v1']?.pending[0]?.attempts).toBe(1);
+  h.setOffline(true); h.advanceTime(5 * 60_000 + 1);
+  await h.popup({ type: 'retry-captures' });
+  await expect.poll(() => h.saved['capture-journal-v1']?.pending.length).toBe(0);
+  const expired = await h.popup({ type: 'state' });
+  expect(expired.connected).toBe(false);
+  expect(expired.captureStatus.state).toBe('attention');
+  expect(expired.captureStatus.detail).toContain('expired');
+  expect(JSON.stringify(h.saved)).not.toContain('contentBase64');
+});
+
+test('a delayed sign-out response from the old account cannot clear the new account’s captures', async ({ page }) => {
+  const h = await setup(page);
+  const release = h.holdNextSession();
+  const oldState = h.popup({ type: 'state' });
+  await expect.poll(() => h.sessionIsHeld()).toBe(true);
+  const paired = await h.popup({ type: 'pair', token: 'new-account-pairing-token' });
+  expect(paired.ok).toBe(true);
+  await select(page, '#resume-upload', '%PDF-new-account', { name: 'new-account.pdf' });
+  await expect.poll(() => selected(h).length).toBe(1);
+  release(401); await oldState;
+  const result = await h.popup({ type: 'state' });
+  expect(result.captureStatus.state).toBe('saved');
+  expect(result.captureStatus.recent[0].name).toBe('new-account.pdf');
+  expect(result.captureError).toBeNull();
+  expect(h.saved['capture-journal-v1'].owner).toBe(digest('new-account-pairing-token'));
 });

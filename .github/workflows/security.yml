@@ -1,0 +1,49 @@
+name: Security gate
+on: [push, pull_request]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  secrets-and-distribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install checksum-verified secret scanner
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          curl --fail --location --retry 3 https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o "$RUNNER_TEMP/gitleaks/gitleaks.tar.gz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks/gitleaks.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/gitleaks/gitleaks.tar.gz" -C "$RUNNER_TEMP/gitleaks" gitleaks
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+      - name: Scan all Git history
+        run: gitleaks git --redact=100 --log-opts=--all --config=.gitleaks.toml .
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run desktop:build
+      - run: node scripts/security-gate.mjs --history --build
+      - name: Check new commit email privacy
+        env:
+          BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE_COMMIT" ] && [ "$BASE_COMMIT" != "0000000000000000000000000000000000000000" ]; then
+            node scripts/security-gate.mjs --email-base "$BASE_COMMIT"
+          fi
+      - name: Scan built application files
+        run: |
+          gitleaks dir --redact=100 --config=.gitleaks.toml dist
+          gitleaks dir --redact=100 --config=.gitleaks.toml desktop-dist
+      - name: Build and inspect distribution archive
+        run: |
+          npx electron-builder --linux --x64 --dir
+          node scripts/security-gate.mjs --archive release/linux-unpacked/resources/app.asar
+          node -e "require('@electron/asar').extractAll(process.argv[1], process.argv[2])" release/linux-unpacked/resources/app.asar "$RUNNER_TEMP/packaged-app"
+          gitleaks dir --redact=100 --config=.gitleaks.toml "$RUNNER_TEMP/packaged-app"

@@ -88,6 +88,12 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .tracking-button { min-height: 40px; padding: 10px 13px; font-size: 13px; }
 .main-content { max-width: 1600px; margin: 0 auto; padding: 28px 40px 40px; }
 .main-content:focus { outline: none; }
+.desktop-login-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px; }
+.desktop-login-row > span { display: grid; gap: 5px; }
+.desktop-login-row > span > span, .desktop-notification-row > span { font-size: 13px; color: var(--muted); }
+.desktop-login-row input { width: 18px; height: 18px; accent-color: var(--ink); }
+.desktop-notification-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 16px 20px; border-top: 1px solid var(--line); }
+.desktop-error { display: flex; align-items: start; gap: 8px; padding: 0 20px 16px; color: var(--red); font-size: 13px; }
 .demo-banner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 12px; margin: 0 0 24px; font-size: 12px; background: oklch(0.93 0 0); border-radius: 8px; }
 .demo-banner > span { display: flex; align-items: center; gap: 10px; color: var(--muted); }
 .demo-banner strong { color: var(--ink); font-weight: 550; }
@@ -319,7 +325,7 @@ button.task-copy:hover strong { color: var(--blue); }
   .topbar { grid-template-columns: auto minmax(0,1fr); grid-template-rows: auto auto; row-gap: 9px; min-height: 0; padding: 12px 32px 8px; }
   .brand { grid-column: 1; grid-row: 1; }
   .header-controls { grid-column: 2; grid-row: 1; }
-  .main-navigation { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 4px; width: 100%; padding-top: 7px; border-top: 1px solid var(--line); }
+  .main-navigation { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 4px; width: 100%; padding-top: 7px; border-top: 1px solid var(--line); }
   .nav-item { min-height: 40px; padding: 9px 10px; }
   .page-heading h1 { font-size: 36px; }
   .demo-banner > span { align-items: flex-start; flex-direction: column; gap: 4px; }
@@ -333,7 +339,7 @@ button.task-copy:hover strong { color: var(--blue); }
   .topbar-actions { gap: 0; }
   .tracking-button { padding: 10px; min-height: 40px; font-size: 12px; gap: 6px; }
   .main-navigation { gap: 3px; padding-top: 7px; }
-  .nav-item { min-height: 40px; padding: 9px 5px; font-size: 12px; gap: 5px; }
+  .nav-item { min-height: 40px; padding: 9px 2px; font-size: 11px; gap: 3px; }
   .nav-count { min-width: 16px; height: 16px; padding: 0 3px; font-size: 9px; }
   .main-content { padding: 22px 16px 30px; }
   .demo-banner { padding: 10px; margin-bottom: 24px; flex-wrap: wrap; gap: 8px; }

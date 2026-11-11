@@ -46,3 +46,13 @@ footer span { padding: 0 5px; color: var(--muted); }
 .capture-notice strong { font-size: 12px; font-weight: 600; line-height: 1.5; }
 .capture-notice p { margin: 5px 0 2px; font-size: 11px; color: var(--muted); line-height: 1.6; }
 .capture-notice.error strong { color: oklch(.48 .15 26); }
+
+#capture-recent { list-style: none; margin: 10px 0 0; padding: 0; }
+#capture-recent li { padding: 9px 0; border-top: 1px solid var(--line); }
+#capture-recent li:last-child { padding-bottom: 0; }
+.capture-row-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.capture-row-heading strong { font-size: 11px; font-weight: 550; overflow-wrap: anywhere; min-width: 0; }
+.capture-state { flex: 0 0 auto; color: var(--muted); font-size: 10px; }
+.capture-state-attention { color: oklch(.48 .15 26); }
+.capture-state-saved { color: oklch(.43 .09 155); }
+#capture-recent p { margin-top: 3px; font-size: 10px; }

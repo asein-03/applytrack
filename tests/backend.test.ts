@@ -164,9 +164,13 @@ test('local origin, host, JSON and extension pairing boundaries are enforced', a
     assert.equal(wrongHostStatus, 403);
     assert.equal((await api('/applications', { method: 'POST', body: JSON.stringify(appInput), headers: { 'Content-Type': 'text/plain' } })).status, 415);
     const extensionOrigin = `chrome-extension://${'a'.repeat(32)}`;
+    const health = await api('/health', { headers: { Origin: extensionOrigin } });
+    assert.equal(health.status, 200);
+    assert.equal(health.headers.get('access-control-allow-origin'), extensionOrigin);
+    assert.deepEqual(await health.json(), { ok: true, dashboardUrl: 'http://localhost:5173' });
     assert.equal((await api('/pairing', { headers: { Origin: extensionOrigin } })).status, 401);
     const { token } = await (await api('/pairing')).json();
-    assert.equal((await api('/settings', { headers: { Origin: extensionOrigin, Authorization: `Bearer ${token}` } })).status, 200);
+    assert.equal((await api('/settings', { headers: { Origin: extensionOrigin, Authorization: `Bearer ${token}` } })).status, 403);
     assert.equal((await api('/settings', { headers: { Origin: extensionOrigin, Authorization: `Bearer ${'é'.repeat(64)}` } })).status, 401);
     const preflight = await fetch(base + '/api/events', { method: 'OPTIONS', headers: { Origin: extensionOrigin, 'Access-Control-Request-Headers': 'authorization,content-type' } });
     assert.equal(preflight.status, 204);

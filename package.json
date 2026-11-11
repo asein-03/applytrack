@@ -1,20 +1,25 @@
 {
   "name": "applytrack",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=24.0.0"
   },
   "scripts": {
-    "dev": "concurrently -k -n api,web \"npm:dev:api\" \"npm:dev:web\"",
+    "dev": "npm run prepare:ocr && concurrently -k -n api,web \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "tsx watch --env-file-if-exists=.env server/index.ts",
     "dev:web": "vite --host 127.0.0.1",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run prepare:ocr && tsc --noEmit && vite build",
     "start": "tsx --env-file-if-exists=.env server/index.ts --production",
     "test": "tsx --test tests/*.test.ts",
     "check": "tsc --noEmit",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "desktop:build": "npm run build && node scripts/build-desktop.mjs",
+    "desktop:dev": "npm run desktop:build && electron .",
+    "desktop:package": "npm run desktop:build && node scripts/package-desktop.mjs",
+    "test:desktop": "playwright test --config=playwright.desktop.config.ts",
+    "prepare:ocr": "node scripts/prepare-ocr.mjs"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
@@ -23,7 +28,7 @@
     "express": "^5.1.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "tesseract.js": "^6.0.1",
+    "tesseract.js": "6.0.1",
     "zod": "^4.1.12"
   },
   "devDependencies": {
@@ -34,8 +39,71 @@
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^5.1.0",
     "concurrently": "^9.2.1",
+    "electron": "45.3.0",
+    "electron-builder": "26.18.0",
+    "esbuild": "0.28.2",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
-    "vite": "^7.2.2"
+    "vite": "^7.2.2",
+    "@tesseract.js-data/eng": "1.0.0"
+  },
+  "description": "Job applications, documents and deadlines in one workspace.",
+  "author": "ApplyTrack",
+  "main": "desktop-dist/main.cjs",
+  "overrides": {
+    "minimatch": "11.0.7",
+    "tesseract.js-core": "6.1.2"
+  },
+  "build": {
+    "appId": "com.applytrack.desktop",
+    "productName": "ApplyTrack",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "desktop-dist/**/*",
+      "extension/**/*",
+      "package.json",
+      "!**/tests/**",
+      "!**/test/**",
+      "!**/__tests__/**",
+      "!**/.env*",
+      "!**/*.sqlite*",
+      "!**/*.db*",
+      "!**/test-results/**",
+      "!**/screenshots/**",
+      "!**/backups/**"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "desktop-dist/icon.png",
+      "identity": "-",
+      "hardenedRuntime": true,
+      "notarize": false,
+      "extendInfo": {
+        "NSScreenCaptureUsageDescription": "ApplyTrack checks the screen you choose for job application confirmations while tracking is on."
+      }
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "desktop-dist/icon.png"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Office",
+      "icon": "desktop-dist/icon.png"
+    },
+    "afterPack": "scripts/after-pack.cjs"
   }
 }

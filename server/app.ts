@@ -7,6 +7,9 @@ import { HttpError, Store } from './store.js';
 import { ingestEvent, reviewEvidence } from './events.js';
 import { seedDemo } from './seed.js';
 import { CloudService, WorkspaceRepository, type CloudActor } from './cloud.js';
+import { attachLibraryRoutes } from './library.js';
+import { attachReminderRoutes } from './reminders.js';
+import { createProtectedVault } from './vault.js';
 import { archiveDocument, attachmentFilename, downloadDocument, drainDocumentDeletions, MAX_COPY_BYTES, MAX_DOCUMENT_BYTES, prepareDocumentCapture } from './documents.js';
 
 const text = (limit = 500) => z.string().trim().max(limit);
@@ -71,8 +74,8 @@ export const apiErrorHandler: ErrorRequestHandler = (error, _request, response, 
   response.status(500).json({ error: 'The request could not be completed.' });
 };
 
-export function createApp(options: { dbPath?: string; cloud?: CloudService; repository?: WorkspaceRepository } = {}) {
-  const store = options.cloud?.runtime ?? new Store(options.dbPath ?? resolve(process.env.DATA_DIR ?? 'data', 'apply.sqlite'));
+export function createApp(options: { dbPath?: string; cloud?: CloudService; repository?: WorkspaceRepository; protectRuntime?: boolean } = {}) {
+  const store = options.cloud?.runtime ?? new Store(options.dbPath ?? resolve(process.env.DATA_DIR ?? 'data', 'apply.sqlite'), options.protectRuntime ? createProtectedVault(resolve(process.env.DATA_DIR ?? 'data')) : undefined);
   seedDemo(store);
   const cloud = options.cloud ?? new CloudService(store, resolve(process.env.DATA_DIR ?? 'data'), !options.dbPath && process.env.APP_STORAGE_MODE !== 'local');
   const repository = options.repository ?? new WorkspaceRepository(store, cloud);
@@ -100,6 +103,11 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
     const fromExtension = !!origin && /^chrome-extension:\/\/[a-p]{32}$/.test(origin);
     const token = request.get('authorization')?.replace(/^Bearer /, '') ?? '';
     const tokenValid = safeTokenEqual(token, store.getMeta<string>('extensionToken') ?? '');
+    response.locals.companion = tokenValid;
+    if (tokenValid) {
+      const route = `${request.method} ${request.originalUrl.split('?')[0]}`;
+      if (!['GET /api/health', 'GET /api/sessions/current', 'POST /api/sessions', 'DELETE /api/sessions/current', 'POST /api/events'].includes(route)) { response.status(403).json({ error: 'The browser companion can only capture applications and control tracking.' }); return; }
+    }
     if (origin && !allowedOrigins.has(origin) && !fromExtension) { response.status(403).json({ error: 'This origin cannot access your tracker.' }); return; }
     if (request.method === 'OPTIONS') {
       if (!origin || (!allowedOrigins.has(origin) && !fromExtension)) { response.sendStatus(403); return; }
@@ -109,7 +117,8 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
       response.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
       response.sendStatus(204); return;
     }
-    if (fromExtension && !tokenValid) { response.status(401).json({ error: 'Pair the browser extension with your tracker first.' }); return; }
+    const publicHealth = request.method === 'GET' && request.originalUrl.split('?')[0] === '/api/health';
+    if (fromExtension && !tokenValid && !publicHealth) { response.status(401).json({ error: 'Pair the browser extension with your tracker first.' }); return; }
     // Google redirects through a cross-site top-level GET. Its route separately
     // verifies the short-lived, one-use state, browser cookie and PKCE verifier.
     const oauthCallback = request.method === 'GET' && request.originalUrl.split('?')[0] === '/api/inboxes/google/callback';
@@ -122,7 +131,7 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
   app.use('/api', express.json({ limit: '3mb' }));
   const getWorkspace = (query: unknown): Workspace => workspace.parse(query ?? 'personal');
 
-  app.get('/api/health', (_req, res) => res.json({ ok: true }));
+  app.get('/api/health', (_req, res) => res.json({ ok: true, dashboardUrl: configuredOrigin && allowedOrigins.has(configuredOrigin) ? configuredOrigin : 'http://localhost:5173' }));
   app.get('/api/cloud/config', (_req, res) => res.json(cloud.config()));
   app.post('/api/cloud/session', async (req, res) => {
     if (!cloud.enabled) throw new HttpError(409, 'Cloud accounts are disabled in local test mode.');
@@ -161,7 +170,9 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
   app.get('/api/sessions/current', async (req, res) => res.json({ session: runtimeFor(await actorFor(req)).getSession() }));
   app.post('/api/sessions', async (req, res) => {
     const body = z.object({ browserEnabled: z.boolean(), screenEnabled: z.boolean() }).strict().refine(value => value.browserEnabled || value.screenEnabled, 'Enable browser or screen tracking.').parse(req.body);
-    res.status(201).json(runtimeFor(await actorFor(req)).startSession(body));
+    const runtime = runtimeFor(await actorFor(req));
+    if (res.locals.companion && body.screenEnabled && !runtime.getSession()?.screenEnabled) throw new HttpError(403, 'Start screen tracking from the dashboard.');
+    res.status(201).json(runtime.startSession(body));
   });
   app.delete('/api/sessions/current', async (req, res) => { runtimeFor(await actorFor(req)).stopSession(); res.sendStatus(204); });
   app.get('/api/settings', async (req, res) => {
@@ -171,6 +182,7 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
   app.get('/api/pairing', async (req, res) => { const actor = await actorFor(req); if (actor && store.getMeta('activeCloudUser') !== actor.id) throw new HttpError(409, 'Activate this account on the device before pairing.'); res.json({ token: store.getMeta('extensionToken') }); });
   app.post('/api/events', async (req, res) => {
     const prepared = prepareDocumentCapture(captureEventSchema.parse(req.body) as CaptureEvent); const input = prepared.input;
+    if (res.locals.companion && ((input.workspace && input.workspace !== 'personal') || input.applicationId || !(input.source === 'browser' && ['submission_pending', 'submission_confirmed', 'document_selected', 'document_removed'].includes(input.kind) || input.source === 'manual' && input.kind === 'note'))) throw new HttpError(403, 'The browser companion can only send job captures.');
     const workspace = input.workspace ?? 'personal'; const actor = await actorFor(req, workspace);
     if (input.source === 'browser' || input.source === 'visual') {
       const session = runtimeFor(actor).getSession();
@@ -201,7 +213,10 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
         }
       }
     }
-    res.status(201).json({ ...result, ...(archiveError ? { archiveError } : {}) });
+    if (res.locals.companion) {
+      const documents = result.application.documents?.filter(document => document.id === result.evidence.documentId).map(({ id, name, kind, sha256, stored }) => ({ id, name, kind, sha256, stored })) ?? [];
+      res.status(201).json({ application: { id: result.application.id, documents }, evidence: { id: result.evidence.id, documentId: result.evidence.documentId, review: result.evidence.review }, ...(archiveError ? { archiveError } : {}) });
+    } else res.status(201).json({ ...result, ...(archiveError ? { archiveError } : {}) });
   });
   app.get('/api/applications/:id/documents/:documentId/file', async (req, res) => { const actor = await actorFor(req); if (!actor) throw new HttpError(404, 'File copies are available from a signed-in cloud account.'); const application = await repository.run('personal', actor, false, data => data.requireApplication(req.params.id)); const { bytes, document } = await downloadDocument(actor, application, req.params.documentId); res.attachment(attachmentFilename(document.name)); res.type('application/octet-stream'); res.send(bytes); });
   app.post('/api/evidence/:id/review', async (req, res) => { const { action } = z.object({ action: z.enum(['accept', 'dismiss']) }).strict().parse(req.body); const workspace = store.listApplications('demo').some(app => app.evidence.some(item => item.id === req.params.id)) ? 'demo' : 'personal'; res.json(await run(req, workspace, true, data => reviewEvidence(data, req.params.id, action))); });
@@ -215,8 +230,10 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
     res.type('text/csv').setHeader('Content-Disposition', 'attachment; filename="applications.csv"');
     res.send('\uFEFF' + [headers, ...rows].map(row => row.map(csvCell).join(',')).join('\r\n'));
   });
+  attachLibraryRoutes(app, store, { cloud, repository });
+  const reminders = attachReminderRoutes(app, store, { cloud, repository });
   app.use(apiErrorHandler);
-  return { app, store, cloud, repository, close: () => store.close() };
+  return { app, store, cloud, repository, reminders, close: () => store.close() };
 }
 
 function safeInbox(inbox: Inbox): Inbox {
