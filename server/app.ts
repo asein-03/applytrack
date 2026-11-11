@@ -102,6 +102,11 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
     const fromExtension = !!origin && /^chrome-extension:\/\/[a-p]{32}$/.test(origin);
     const token = request.get('authorization')?.replace(/^Bearer /, '') ?? '';
     const tokenValid = safeTokenEqual(token, store.getMeta<string>('extensionToken') ?? '');
+    response.locals.companion = tokenValid;
+    if (tokenValid) {
+      const route = `${request.method} ${request.originalUrl.split('?')[0]}`;
+      if (!['GET /api/health', 'GET /api/sessions/current', 'POST /api/sessions', 'DELETE /api/sessions/current', 'POST /api/events'].includes(route)) { response.status(403).json({ error: 'The browser companion can only capture applications and control tracking.' }); return; }
+    }
     if (origin && !allowedOrigins.has(origin) && !fromExtension) { response.status(403).json({ error: 'This origin cannot access your tracker.' }); return; }
     if (request.method === 'OPTIONS') {
       if (!origin || (!allowedOrigins.has(origin) && !fromExtension)) { response.sendStatus(403); return; }
@@ -164,7 +169,9 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
   app.get('/api/sessions/current', async (req, res) => res.json({ session: runtimeFor(await actorFor(req)).getSession() }));
   app.post('/api/sessions', async (req, res) => {
     const body = z.object({ browserEnabled: z.boolean(), screenEnabled: z.boolean() }).strict().refine(value => value.browserEnabled || value.screenEnabled, 'Enable browser or screen tracking.').parse(req.body);
-    res.status(201).json(runtimeFor(await actorFor(req)).startSession(body));
+    const runtime = runtimeFor(await actorFor(req));
+    if (res.locals.companion && body.screenEnabled && !runtime.getSession()?.screenEnabled) throw new HttpError(403, 'Start screen tracking from the dashboard.');
+    res.status(201).json(runtime.startSession(body));
   });
   app.delete('/api/sessions/current', async (req, res) => { runtimeFor(await actorFor(req)).stopSession(); res.sendStatus(204); });
   app.get('/api/settings', async (req, res) => {
@@ -174,6 +181,7 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
   app.get('/api/pairing', async (req, res) => { const actor = await actorFor(req); if (actor && store.getMeta('activeCloudUser') !== actor.id) throw new HttpError(409, 'Activate this account on the device before pairing.'); res.json({ token: store.getMeta('extensionToken') }); });
   app.post('/api/events', async (req, res) => {
     const prepared = prepareDocumentCapture(captureEventSchema.parse(req.body) as CaptureEvent); const input = prepared.input;
+    if (res.locals.companion && ((input.workspace && input.workspace !== 'personal') || input.applicationId || !(input.source === 'browser' && ['submission_pending', 'submission_confirmed', 'document_selected', 'document_removed'].includes(input.kind) || input.source === 'manual' && input.kind === 'note'))) throw new HttpError(403, 'The browser companion can only send job captures.');
     const workspace = input.workspace ?? 'personal'; const actor = await actorFor(req, workspace);
     if (input.source === 'browser' || input.source === 'visual') {
       const session = runtimeFor(actor).getSession();
@@ -204,7 +212,10 @@ export function createApp(options: { dbPath?: string; cloud?: CloudService; repo
         }
       }
     }
-    res.status(201).json({ ...result, ...(archiveError ? { archiveError } : {}) });
+    if (res.locals.companion) {
+      const documents = result.application.documents?.filter(document => document.id === result.evidence.documentId).map(({ id, name, kind, sha256, stored }) => ({ id, name, kind, sha256, stored })) ?? [];
+      res.status(201).json({ application: { id: result.application.id, documents }, evidence: { id: result.evidence.id, documentId: result.evidence.documentId, review: result.evidence.review }, ...(archiveError ? { archiveError } : {}) });
+    } else res.status(201).json({ ...result, ...(archiveError ? { archiveError } : {}) });
   });
   app.get('/api/applications/:id/documents/:documentId/file', async (req, res) => { const actor = await actorFor(req); if (!actor) throw new HttpError(404, 'File copies are available from a signed-in cloud account.'); const application = await repository.run('personal', actor, false, data => data.requireApplication(req.params.id)); const { bytes, document } = await downloadDocument(actor, application, req.params.documentId); res.attachment(attachmentFilename(document.name)); res.type('application/octet-stream'); res.send(bytes); });
   app.post('/api/evidence/:id/review', async (req, res) => { const { action } = z.object({ action: z.enum(['accept', 'dismiss']) }).strict().parse(req.body); const workspace = store.listApplications('demo').some(app => app.evidence.some(item => item.id === req.params.id)) ? 'demo' : 'personal'; res.json(await run(req, workspace, true, data => reviewEvidence(data, req.params.id, action))); });
