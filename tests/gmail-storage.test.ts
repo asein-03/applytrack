@@ -60,9 +60,10 @@ before(async () => {
   // pg_net performs outbound HTTP, unavailable in the embedded PostgreSQL engine.
   // Only its extension installation is substituted; all application SQL executes.
   await db.exec(migration.replace('create extension if not exists pg_net with schema extensions;', ''));
+  await db.exec(await readFile(new URL('../supabase/migrations/20261111043508_gmail_dispatch_tickets.sql', import.meta.url), 'utf8'));
 });
 beforeEach(async () => {
-  await db.exec(`reset role; select set_config('request.jwt.claims','{"role":"service_role"}',false); truncate auth.users cascade;`);
+  await db.exec(`reset role; select set_config('request.jwt.claims','{"role":"service_role"}',false); truncate auth.users cascade; truncate private.apply_gmail_dispatch_tickets;`);
   await db.query('insert into auth.users(id,email_confirmed_at) values($1,now()),($2,now())', [owner, other]);
   await db.query('insert into auth.sessions(id,user_id) values($1,$2),($3,$4)', [session, owner, otherSession, other]);
 });
@@ -201,4 +202,23 @@ test('a user cannot save more than fifty cloud inboxes', async () => {
   const stateHash = await oauth();
   const target = await rpc<{ id: string }>('target', { ...identity, emailHash });
   await assert.rejects(rpc('save_connection', { ...identity, inboxId: target.id, stateHash, emailHash, email: 'applicant@example.com', existingGeneration: null, generation: randomUUID(), tokenCipher: cipher }), code('54000'));
+});
+
+
+test('dispatch tickets are private, expiry-bound, and atomically consumed once', async () => {
+  for (const role of ['anon', 'authenticated']) {
+    const privileges = await db.query<{ consume: boolean; read: boolean }>("select has_function_privilege($1,'public.apply_gmail_consume_dispatch(text,bigint)','execute') as consume,has_table_privilege($1,'private.apply_gmail_dispatch_tickets','select') as read", [role]);
+    assert.deepEqual(privileges.rows[0], { consume: false, read: false });
+  }
+  const hash = 'a'.repeat(64);
+  const issuedAt = Math.floor(Date.now()/1000);
+  await db.query('insert into private.apply_gmail_dispatch_tickets(nonce_hash,issued_at) values($1,$2)', [hash, issuedAt]);
+  const consume = async (time: number) => (await db.query<{ consumed: boolean }>('select public.apply_gmail_consume_dispatch($1,$2) as consumed', [hash, time])).rows[0].consumed;
+  assert.equal(await consume(issuedAt - 1), false);
+  assert.equal(await consume(issuedAt), true);
+  assert.equal(await consume(issuedAt), false);
+  await db.query("insert into private.apply_gmail_dispatch_tickets(nonce_hash,issued_at,expires_at) values($1,$2,now()-interval '1 second')", [hash, issuedAt]);
+  assert.equal(await consume(issuedAt), false);
+  await db.exec(`select set_config('request.jwt.claims','{"role":"authenticated"}',false)`);
+  await assert.rejects(consume(issuedAt), code('42501'));
 });

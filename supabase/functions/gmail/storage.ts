@@ -16,6 +16,11 @@ export class GmailStorage {
     }
     return data as T;
   }
+  async consumeDispatch(nonceHash: string, issuedAt: number): Promise<boolean> {
+    const { data, error } = await this.client.rpc('apply_gmail_consume_dispatch', { p_nonce_hash: nonceHash, p_issued_at: issuedAt });
+    if (error) throw new StorageError(error.code || 'unavailable');
+    return data === true;
+  }
   createOAuth(state: Omit<OAuthState, 'expectedEmail'>): Promise<boolean> { return this.call('create_oauth', { ...state }); }
   authorizeAttempt(stateHash: string): Promise<boolean> { return this.call('authorize_attempt', { stateHash }); }
   authorizeOAuth(stateHash: string, userId: string, browserHash: string): Promise<OAuthState | null> { return this.call('authorize_oauth', { stateHash, userId, browserHash }); }

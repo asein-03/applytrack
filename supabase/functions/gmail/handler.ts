@@ -1,4 +1,5 @@
-import { pkceChallenge, randomSecret, secretsEqual, sha256, stateContext, TokenCipher, tokenContext } from './crypto.ts';
+import { verifyDispatch } from './dispatch.ts';
+import { pkceChallenge, randomSecret, sha256, stateContext, TokenCipher, tokenContext } from './crypto.ts';
 import { authorizationUrl, boundedJSON, boundedText, createGmailApi, exchangeCode, gmailProfile, revokeToken, type Fetcher, type GoogleConfig } from './oauth.ts';
 import { GmailHttpError, type GmailSyncContext, type GmailSyncResult, type GmailTokens } from './shared.ts';
 import { GmailStorage, StorageError, type GmailIdentity } from './storage.ts';
@@ -155,9 +156,8 @@ export function createGmailHandler(dependencies: GmailDependencies): (request: R
       const payload = body as Record<string, unknown>;
       if (Object.keys(payload).some(key => !['action', 'inboxId'].includes(key))) return json({ error: 'Invalid request.' }, 400);
       if (payload.action === 'work') {
-        const supplied = request.headers.get('X-Apply-Gmail-Worker') || '';
-        if (!configured || supplied.length > 256 || !await secretsEqual(supplied, dependencies.workerSecret)) return json({ error: 'Worker authentication required.' }, 401);
         if (payload.inboxId !== undefined) return json({ error: 'Invalid request.' }, 400);
+        if (!configured || !await verifyDispatch(request, dependencies.workerSecret, (nonceHash, issuedAt) => storage.consumeDispatch(nonceHash, issuedAt))) return json({ error: 'Worker authentication required.' }, 401);
         schedule();
         return json({ accepted: true }, 202);
       }
