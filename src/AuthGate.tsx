@@ -1,7 +1,7 @@
 import { createContext, Fragment, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { Session, SupabaseClient } from '@supabase/supabase-js';
 import { ArrowLeft, Check, EnvelopeSimple, WarningCircle } from '@phosphor-icons/react';
-import { clearWorkspaceContext, getCloudClient, loadCloudConfig, prepareAccountWorkspace, type CloudConfig } from './cloud';
+import { clearWorkspaceContext, getAuthCallbackState, getCloudClient, loadCloudConfig, prepareAccountWorkspace, type CloudConfig } from './cloud';
 import './auth.css';
 
 interface Account { enabled: boolean; email: string | null; signOut: (() => Promise<void>) | null; }
@@ -13,12 +13,19 @@ function AuthShell({ children }: { children: ReactNode }) {
 }
 
 function AuthForm({ client, onSession, initialError }: { client: SupabaseClient; onSession: (session: Session) => void; initialError: string }) {
-  const [mode, setMode] = useState<'signin' | 'signup' | 'reset'>('signin');
+  const [mode, setMode] = useState<'signin' | 'signup' | 'reset'>(() => {
+    const requested = new URLSearchParams(window.location.search).get('auth');
+    return requested === 'signup' || requested === 'reset' ? requested : 'signin';
+  });
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(initialError);
   const [sent, setSent] = useState<'confirmation' | 'reset' | null>(null);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('auth')) { url.searchParams.delete('auth'); window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`); }
+  }, []);
   function changeMode(next: typeof mode) { setMode(next); setPassword(''); setError(''); setSent(null); }
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError('');
@@ -41,10 +48,11 @@ function AuthForm({ client, onSession, initialError }: { client: SupabaseClient;
     } catch (error) { setError(error instanceof Error ? error.message : 'Could not complete this request. Try again.'); }
     finally { setBusy(false); }
   }
-  if (sent) return <><span className="auth-state-icon"><EnvelopeSimple size={25} /></span><h1>Check your email</h1><p className="auth-intro">{sent === 'confirmation' ? 'Confirm your email address to finish creating your account.' : 'Follow the password reset link to choose a new password.'}</p><p className="auth-email" role="status">{email.trim()}</p><button className="button primary auth-submit" onClick={() => changeMode('signin')}>Back to sign in</button></>;
+  if (window.applyDesktop && mode !== 'signin') return <><h1>{mode === 'signup' ? 'Create an account' : 'Reset your password'}</h1><p className="auth-intro">Start this step in your browser so your email link opens in the same place. Then return to ApplyTrack and sign in.</p>{error && <p className="auth-error" role="alert">{error}</p>}<button className="button primary auth-submit" disabled={busy} onClick={async () => { setBusy(true); setError(''); try { await window.applyDesktop!.openAccountInBrowser(mode); } catch { setError('Your browser could not be opened. Try again.'); } finally { setBusy(false); } }}>{busy ? 'Opening…' : 'Open in browser'}</button><button className="text-button auth-secondary-action" onClick={() => changeMode('signin')} disabled={busy}>Back to sign in</button></>;
+  if (sent) return <><span className="auth-state-icon"><EnvelopeSimple size={25} /></span><h1>Check your email</h1><p className="auth-intro">{sent === 'confirmation' ? 'Confirm your email address to finish creating your account.' : 'Follow the password reset link to choose a new password.'} Open the link in this browser.</p><p className="auth-email" role="status">{email.trim()}</p><button className="button primary auth-submit" onClick={() => changeMode('signin')}>Back to sign in</button></>;
   return <><h1>{mode === 'signin' ? 'Sign in' : mode === 'signup' ? 'Create an account' : 'Reset your password'}</h1><p className="auth-intro">{mode === 'reset' ? 'We’ll send a reset link to your email address.' : 'Keep your applications, documents and updates in your account.'}</p><form className="auth-form" onSubmit={submit}>
     <label className="field"><span>Email</span><input type="email" name="email" autoComplete="email" autoFocus value={email} onChange={event => setEmail(event.target.value)} required disabled={busy} /></label>
-    {mode !== 'reset' && <div className="field"><label htmlFor="auth-password">Password</label><input id="auth-password" type="password" name="password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} value={password} onChange={event => setPassword(event.target.value)} minLength={mode === 'signup' ? 8 : undefined} required disabled={busy} aria-describedby={mode === 'signup' ? 'auth-password-help' : undefined} />{mode === 'signup' && <span className="auth-field-help" id="auth-password-help">At least 8 characters.</span>}</div>}
+    {mode !== 'reset' && <div className="field"><label htmlFor="auth-password">Password</label><input id="auth-password" type="password" name="password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} value={password} onChange={event => setPassword(event.target.value)} minLength={mode === 'signup' ? 12 : undefined} required disabled={busy} aria-describedby={mode === 'signup' ? 'auth-password-help' : undefined} />{mode === 'signup' && <span className="auth-field-help" id="auth-password-help">At least 12 characters.</span>}</div>}
     {mode === 'signin' && <button type="button" className="text-button auth-forgot" onClick={() => changeMode('reset')} disabled={busy}>Forgot password?</button>}
     {error && <p className="auth-error" role="alert"><WarningCircle size={17} />{error}</p>}
     <button className="button primary auth-submit" disabled={busy}>{busy ? 'Working…' : mode === 'signin' ? 'Sign in' : mode === 'signup' ? 'Create account' : 'Send reset link'}</button>
@@ -64,7 +72,7 @@ function RecoveryForm({ client, onComplete }: { client: SupabaseClient; onComple
     catch (error) { setError(error instanceof Error ? error.message : 'Could not update your password.'); }
     finally { setBusy(false); }
   }
-  return <><h1>Choose a new password</h1><p className="auth-intro">Use at least 8 characters.</p><form className="auth-form" onSubmit={submit}><label className="field"><span>New password</span><input type="password" autoComplete="new-password" minLength={8} value={password} onChange={event => setPassword(event.target.value)} required autoFocus disabled={busy} /></label><label className="field"><span>Confirm new password</span><input type="password" autoComplete="new-password" minLength={8} value={confirmation} onChange={event => setConfirmation(event.target.value)} required disabled={busy} /></label>{error && <p className="auth-error" role="alert">{error}</p>}<button className="button primary auth-submit" disabled={busy}>{busy ? 'Saving…' : 'Save password'}</button></form></>;
+  return <><h1>Choose a new password</h1><p className="auth-intro">Use at least 12 characters.</p><form className="auth-form" onSubmit={submit}><label className="field"><span>New password</span><input type="password" autoComplete="new-password" minLength={12} value={password} onChange={event => setPassword(event.target.value)} required autoFocus disabled={busy} /></label><label className="field"><span>Confirm new password</span><input type="password" autoComplete="new-password" minLength={12} value={confirmation} onChange={event => setConfirmation(event.target.value)} required disabled={busy} /></label>{error && <p className="auth-error" role="alert">{error}</p>}<button className="button primary auth-submit" disabled={busy}>{busy ? 'Saving…' : 'Save password'}</button></form></>;
 }
 
 class SessionRequestError extends Error {
@@ -85,8 +93,8 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [boundUser, setBoundUser] = useState<string | null>(null);
   const [bindingError, setBindingError] = useState('');
   const [bindAttempt, setBindAttempt] = useState(0);
-  const [recovery, setRecovery] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('type') === 'recovery');
-  const [authError, setAuthError] = useState(() => new URLSearchParams(window.location.hash.slice(1)).get('error_description') || '');
+  const [recovery, setRecovery] = useState(false);
+  const [authError, setAuthError] = useState('');
   const [logoutPending, setLogoutPending] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [logoutError, setLogoutError] = useState('');
@@ -103,6 +111,8 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       if (!active) return;
       setConfig(value);
       if (!value.enabled || !value.configured) { setAuthReady(true); return; }
+      const callback = getAuthCallbackState();
+      setRecovery(callback.recovery); setAuthError(callback.error);
       const client = getCloudClient()!;
       const { data: listener } = client.auth.onAuthStateChange((event, nextSession) => {
         if (!active) return;

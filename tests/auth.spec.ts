@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import type { Application } from '../shared/types';
+import { createHash } from 'node:crypto';
 
 const authOrigin = 'https://apply-auth.test';
 const user = { id: '11111111-1111-4111-8111-111111111111', email: 'applicant@example.test', aud: 'authenticated', role: 'authenticated', app_metadata: { provider: 'email', providers: ['email'] }, user_metadata: {}, created_at: '2026-11-10T12:00:00Z' };
@@ -11,13 +12,21 @@ async function mockCloud(page: Page, options: { configured?: boolean; bind?: (ro
   const apiCalls: { path: string; method: string; authorization?: string; body?: unknown }[] = [];
   const authCalls: { path: string; method: string; body?: unknown }[] = [];
   let bindAttempt = 0;
+  let issuedChallenge: string | undefined;
   await page.route(`${authOrigin}/auth/v1/**`, async route => {
     const request = route.request(); const url = new URL(request.url());
     authCalls.push({ path: url.pathname, method: request.method(), body: request.postData() ? request.postDataJSON() : undefined });
-    if (url.pathname.endsWith('/token')) return route.fulfill({ json: session });
+    if (url.pathname.endsWith('/token')) {
+      if (url.searchParams.get('grant_type') === 'pkce') {
+        const input = request.postDataJSON();
+        if (input.auth_code !== 'fixture-code' || !issuedChallenge || createHash('sha256').update(input.code_verifier || '').digest('base64url') !== issuedChallenge) return route.fulfill({ status: 400, json: { error: 'invalid_grant', error_description: 'Code or verifier did not match.' } });
+        issuedChallenge = undefined;
+      }
+      return route.fulfill({ json: session });
+    }
     if (url.pathname.endsWith('/user')) return route.fulfill({ json: user });
-    if (url.pathname.endsWith('/signup')) return route.fulfill({ json: { user } });
-    if (url.pathname.endsWith('/recover')) return route.fulfill({ json: {} });
+    if (url.pathname.endsWith('/signup')) { issuedChallenge = request.postDataJSON().code_challenge; return route.fulfill({ json: { user } }); }
+    if (url.pathname.endsWith('/recover')) { issuedChallenge = request.postDataJSON().code_challenge; return route.fulfill({ json: {} }); }
     if (url.pathname.endsWith('/logout')) return route.fulfill({ status: 204 });
     return route.fulfill({ status: 404, json: { msg: 'Unexpected authentication request.' } });
   });
@@ -96,7 +105,7 @@ test('sign-up confirmation and password reset stay outside the workspace until a
   await page.getByRole('button', { name: 'Back to sign in', exact: true }).click();
   await page.getByRole('button', { name: 'Forgot password?', exact: true }).click();
   await page.getByRole('button', { name: 'Send reset link', exact: true }).click();
-  await expect(page.getByText('Follow the password reset link to choose a new password.')).toBeVisible();
+  await expect(page.getByText('Follow the password reset link to choose a new password. Open the link in this browser.')).toBeVisible();
   expect(authCalls.some(call => call.path.endsWith('/recover'))).toBe(true);
   expect(apiCalls.some(call => call.path === '/api/cloud/session' || call.path === '/api/applications')).toBe(false);
 });
@@ -112,10 +121,17 @@ test('a failed device binding can be retried without loading account records ear
 
 test('recovery links require a new password before account data is loaded', async ({ page }) => {
   const { apiCalls, authCalls } = await mockCloud(page);
-  const hash = new URLSearchParams({ access_token: token, refresh_token: session.refresh_token, expires_in: '3600', token_type: 'bearer', type: 'recovery' });
-  await page.goto(`/#${hash}`);
+  await page.goto('/?auth=reset');
+  await page.getByRole('textbox', { name: 'Email', exact: true }).fill(user.email);
+  await page.getByRole('button', { name: 'Send reset link', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Check your email', exact: true })).toBeVisible();
+  await page.goto('/?code=fixture-code');
   await expect(page.getByRole('heading', { name: 'Choose a new password', exact: true })).toBeVisible();
   expect(apiCalls.some(call => call.path === '/api/applications')).toBe(false);
+  await page.getByLabel('New password', { exact: true }).fill('elevenchars');
+  await page.getByLabel('Confirm new password', { exact: true }).fill('elevenchars');
+  await page.getByRole('button', { name: 'Save password', exact: true }).click();
+  expect(authCalls.some(call => call.path.endsWith('/user') && call.method === 'PUT')).toBe(false);
   await page.getByLabel('New password', { exact: true }).fill('new-test-password');
   await page.getByLabel('Confirm new password', { exact: true }).fill('different-password');
   await page.getByRole('button', { name: 'Save password', exact: true }).click();
@@ -124,6 +140,108 @@ test('recovery links require a new password before account data is loaded', asyn
   await page.getByRole('button', { name: 'Save password', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
   expect(authCalls.some(call => call.path.endsWith('/user') && call.method === 'PUT')).toBe(true);
+  expect(new URL(page.url()).searchParams.has('code')).toBe(false);
+});
+
+test('account confirmation requires the verifier created by this browser', async ({ page }) => {
+  const { apiCalls, authCalls } = await mockCloud(page);
+  await page.goto('/?auth=signup');
+  await page.getByRole('textbox', { name: 'Email', exact: true }).fill(user.email);
+  await page.getByLabel('Password', { exact: true }).fill('elevenchars');
+  await page.getByRole('button', { name: 'Create account', exact: true }).click();
+  expect(authCalls.some(call => call.path.endsWith('/signup'))).toBe(false);
+  await page.getByLabel('Password', { exact: true }).fill('test-password-only');
+  await page.getByRole('button', { name: 'Create account', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Check your email', exact: true })).toBeVisible();
+  expect(authCalls.find(call => call.path.endsWith('/signup'))?.body).toMatchObject({ code_challenge_method: 's256', code_challenge: expect.any(String) });
+  await page.goto('/?code=fixture-code');
+  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
+  expect(authCalls.find(call => call.path.endsWith('/token'))?.body).toMatchObject({ auth_code: 'fixture-code', code_verifier: expect.any(String) });
+  expect(apiCalls.some(call => call.path === '/api/cloud/session' && call.method === 'POST')).toBe(true);
+  expect(new URL(page.url()).searchParams.has('code')).toBe(false);
+});
+
+test('unsolicited token links are cleared without creating or replacing a session', async ({ page }) => {
+  const { apiCalls, authCalls } = await mockCloud(page);
+  const injected = new URLSearchParams({ access_token: 'attacker-token', refresh_token: 'attacker-refresh', expires_in: '3600', token_type: 'bearer', type: 'recovery' });
+  await page.goto(`/#${injected}`);
+  await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('This sign-in link is not supported');
+  expect(new URL(page.url()).hash).toBe('');
+  expect(authCalls).toHaveLength(0);
+  expect(apiCalls.some(call => call.path === '/api/cloud/session')).toBe(false);
+  await signIn(page);
+  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
+  await page.goto(`/?access_token=attacker-token&refresh_token=attacker-refresh#${injected}`);
+  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
+  expect(new URL(page.url()).hash).toBe('');
+  expect(new URL(page.url()).search).toBe('');
+  expect(apiCalls.filter(call => call.path === '/api/cloud/session' && call.method === 'POST').every(call => call.authorization === `Bearer ${token}`)).toBe(true);
+  expect(JSON.stringify(await page.evaluate(() => ({ ...localStorage })))).not.toContain('attacker');
+});
+
+test('a callback opened in another browser explains the missing verifier without importing a session', async ({ page }) => {
+  const { apiCalls, authCalls } = await mockCloud(page);
+  await page.goto('/?code=fixture-code');
+  await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('Use the browser where you requested it');
+  expect(authCalls).toHaveLength(0);
+  expect(apiCalls.some(call => call.path === '/api/cloud/session')).toBe(false);
+  expect(new URL(page.url()).search).toBe('');
+});
+
+test('desktop account creation and recovery start in the system browser', async ({ page }) => {
+  const { authCalls } = await mockCloud(page);
+  await page.addInitScript(() => {
+    (window as any).__accountModes = [];
+    const values = new Map<string, string>();
+    (window as any).applyDesktop = {
+      authStorage: { getItem: async (key: string) => values.get(key) ?? null, setItem: async (key: string, value: string) => { values.set(key, value); }, removeItem: async (key: string) => { values.delete(key); } },
+      openAccountInBrowser: async (mode: string) => { (window as any).__accountModes.push(mode); },
+    };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Create an account', exact: true }).click();
+  await expect(page.getByText('Start this step in your browser so your email link opens in the same place. Then return to ApplyTrack and sign in.')).toBeVisible();
+  await page.getByRole('button', { name: 'Open in browser', exact: true }).click();
+  await page.getByRole('button', { name: 'Back to sign in', exact: true }).click();
+  await page.getByRole('button', { name: 'Forgot password?', exact: true }).click();
+  await page.getByRole('button', { name: 'Open in browser', exact: true }).click();
+  expect(await page.evaluate(() => (window as any).__accountModes)).toEqual(['signup', 'reset']);
+  expect(authCalls).toHaveLength(0);
+});
+
+test('native sign-in stores tokens through the secure bridge and clears legacy plaintext auth keys', async ({ page }) => {
+  await mockCloud(page);
+  await page.addInitScript(() => {
+    localStorage.setItem('sb-apply-auth-auth-token', 'legacy-native-token');
+    localStorage.setItem('sb-apply-auth-auth-token-code-verifier', 'legacy-verifier');
+    const values = new Map<string, string>();
+    (window as any).__nativeValues = values;
+    (window as any).applyDesktop = {
+      authStorage: { getItem: async (key: string) => values.get(key) ?? null, setItem: async (key: string, value: string) => { values.set(key, value); }, removeItem: async (key: string) => { values.delete(key); } },
+      onCommand: () => () => {},
+    };
+  });
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+  await signIn(page);
+  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
+  const stored = await page.evaluate(() => ({ local: { ...localStorage }, native: [...(window as any).__nativeValues.values()] }));
+  expect(stored.local['sb-apply-auth-auth-token']).toBeUndefined();
+  expect(stored.local['sb-apply-auth-auth-token-code-verifier']).toBeUndefined();
+  expect(JSON.stringify(stored.local)).not.toContain(token);
+  expect(stored.native.some(value => JSON.parse(value).access_token === token)).toBe(true);
+});
+
+test('native sign-in fails closed when secure storage is unavailable', async ({ page }) => {
+  const { apiCalls, authCalls } = await mockCloud(page);
+  await page.addInitScript(() => { (window as any).applyDesktop = {}; });
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Account service unavailable', exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('Secure account storage is unavailable');
+  expect(authCalls).toHaveLength(0);
+  expect(apiCalls.some(call => call.path === '/api/cloud/session')).toBe(false);
 });
 
 test('missing cloud configuration explains setup without falling back to local storage', async ({ page }) => {
@@ -142,7 +260,7 @@ test('sign-out uses the last token when the browser session has already disappea
   await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
   await page.getByRole('navigation').getByRole('button', { name: 'Connections', exact: true }).click();
   await page.evaluate(async () => {
-    const modulePath = '/src/cloud.ts';
+    const modulePath = performance.getEntriesByType('resource').find(entry => new URL(entry.name).pathname === '/src/cloud.ts')?.name || '/src/cloud.ts';
     const { getCloudClient } = await import(modulePath);
     getCloudClient().auth.getSession = async () => ({ data: { session: null }, error: null });
   });
@@ -158,7 +276,7 @@ test('an expired browser session can sign out while an unclosed tracking connect
   await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
   await page.getByRole('navigation').getByRole('button', { name: 'Connections', exact: true }).click();
   await page.evaluate(async () => {
-    const modulePath = '/src/cloud.ts';
+    const modulePath = performance.getEntriesByType('resource').find(entry => new URL(entry.name).pathname === '/src/cloud.ts')?.name || '/src/cloud.ts';
     const { getCloudClient } = await import(modulePath);
     getCloudClient().auth.getSession = async () => ({ data: { session: null }, error: null });
   });
