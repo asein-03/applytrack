@@ -105,3 +105,52 @@ test('deadline extraction preserves explicit timezones across UTC day boundaries
   assert.equal(explicitDeadline('Due: 2026-02-30T23:00:00-05:00'), null);
   assert.equal(explicitDeadline('Due: 2026-11-14T17:00:00'), null);
 });
+
+test('remote MIME and HTML parsing stops at bounded bytes and part counts', () => {
+  const encode = (value: string) => Buffer.from(value).toString('base64url');
+  const plain = { mimeType: 'text/plain', body: { data: encode('a'.repeat(80_000) + 'OUTSIDE_LIMIT') } };
+  assert.equal(extractBody(plain).length, 64_000);
+  assert.equal(extractBody({ mimeType: 'multipart/mixed', parts: Array.from({ length: 300 }, () => plain) }).length, 64_000);
+  const parts = Array.from({ length: 300 }, () => ({ mimeType: 'text/plain', body: { data: '' } }));
+  Object.defineProperty(parts[250], 'body', { get() { throw new Error('Visited a MIME part beyond the limit.'); } });
+  assert.equal(extractBody({ mimeType: 'multipart/mixed', parts }), '');
+  const malformed = '<script>'.repeat(48_000) + 'OUTSIDE_LIMIT';
+  assert.equal(extractBody({ mimeType: 'text/html', body: { data: encode(malformed) } }), '');
+});
+
+test('HTML extraction preserves useful links but excludes executable and quoted text', () => {
+  const html = '<p>Current message.</p><script>application rejected</script><style>application rejected</style><!-- application rejected --><blockquote>Old outcome<blockquote>Older outcome</blockquote></blockquote><a title="value > text" href="https://assessment.example.test/?a=1&amp;b=2">Assessment</a><a href="javascript:alert(1)">Unsafe link</a><p>End.</p>';
+  const text = extractBody({ mimeType: 'text/html', body: { data: Buffer.from(html).toString('base64url') } });
+  assert.match(text, /Current message\./);
+  assert.match(text, /Assessment https:\/\/assessment\.example\.test\/\?a=1&b=2/);
+  assert.match(text, /End\./);
+  assert.doesNotMatch(text, /rejected|Old outcome|Older outcome|javascript|alert\(1\)/);
+  assert.equal(extractBody({ mimeType: 'text/html', body: { data: Buffer.from('<script>inert</scripture>Also inert').toString('base64url') } }), '');
+});
+
+test('oversized and malformed Google responses stop safely without exposing response content', async () => {
+  const priorId = process.env.GOOGLE_CLIENT_ID; const priorSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const originalFetch = globalThis.fetch;
+  process.env.GOOGLE_CLIENT_ID = 'synthetic-client'; process.env.GOOGLE_CLIENT_SECRET = 'synthetic-client-secret';
+  try {
+    for (const body of ['x'.repeat(2 * 1024 * 1024 + 1), '{"access_token":"private-synthetic-token"']) {
+      globalThis.fetch = async (input, init) => String(input) === 'https://oauth2.googleapis.com/token' ? new Response(body, { status: 200 }) : originalFetch(input, init);
+      await withEmailServer(async api => {
+        const connected = await api('/inboxes/google/connect', post({}));
+        const { url } = await connected.json();
+        const state = new URL(url).searchParams.get('state');
+        const cookie = connected.headers.get('set-cookie')!.split(';')[0];
+        const response = await api(`/inboxes/google/callback?state=${state}&code=synthetic-code`, { headers: { Cookie: cookie } });
+        assert.equal(response.status, 502);
+        const error = await response.text();
+        assert.match(error, /larger than 2 MB|invalid response/);
+        assert.doesNotMatch(error, /private-synthetic-token|synthetic-client-secret/);
+        assert.deepEqual((await (await api('/inboxes')).json()).inboxes, []);
+      });
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (priorId === undefined) delete process.env.GOOGLE_CLIENT_ID; else process.env.GOOGLE_CLIENT_ID = priorId;
+    if (priorSecret === undefined) delete process.env.GOOGLE_CLIENT_SECRET; else process.env.GOOGLE_CLIENT_SECRET = priorSecret;
+  }
+});
