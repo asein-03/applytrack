@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import type { GmailStatus, Inbox } from '../shared/types';
 
-const googleUrl = 'https://accounts.google.com/o/oauth2/v2/auth?state=synthetic-state';
+const authorizationUrl = `https://asein-03.github.io/applytrack/auth/?state=${'s'.repeat(43)}`;
 const inbox = (extra: Partial<Inbox> = {}): Inbox => ({ id: 'synthetic-inbox', provider: 'gmail', email: 'applicant@example.invalid', status: 'connected', lastSyncAt: null, error: null, connectedAt: '2026-11-10T12:00:00Z', syncing: false, ...extra });
 async function setup(page: Page, inboxes: Inbox[] = [], blocked = false) {
   const state: GmailStatus = { gmailConfigured: true, gmailSyncMode: 'cloud', inboxes }, calls: Array<{ path: string; method: string; body: unknown }> = [];
@@ -18,7 +18,7 @@ async function setup(page: Page, inboxes: Inbox[] = [], blocked = false) {
     const path = new URL(route.request().url()).pathname, method = route.request().method();
     const body = route.request().postData() ? route.request().postDataJSON() : null; calls.push({ path, method, body });
     if (path === '/api/cloud/config') return route.fulfill({ json: { enabled: false, configured: false } });
-    if (path === '/api/inboxes/google/connect') return route.fulfill({ json: { url: googleUrl } });
+    if (path === '/api/inboxes/google/connect') return route.fulfill({ json: { url: authorizationUrl } });
     if (path.endsWith('/sync')) { state.inboxes = state.inboxes.map(value => ({ ...value, syncing: true })); return route.fulfill({ json: { syncing: true } }); }
     if (path === '/api/inboxes/synthetic-inbox' && method === 'DELETE') { state.inboxes = []; return route.fulfill({ json: { disconnected: true } }); }
     if (path === '/api/inboxes') return route.fulfill({ json: state });
@@ -30,14 +30,15 @@ async function setup(page: Page, inboxes: Inbox[] = [], blocked = false) {
   return { state, calls };
 }
 
-test('Gmail opens in a separate browser flow and connection status completes without a local callback', async ({ page }) => {
+test('Gmail opens a trusted sign-in page in a separate browser flow and connection status completes without a local callback', async ({ page }) => {
   const { state } = await setup(page);
   await expect(page.getByText(/Inbox checks continue in the cloud when this app is closed/)).toBeVisible();
   await expect(page.getByText(/cannot send, edit or delete your Gmail messages/)).toBeVisible();
   await page.getByRole('button', { name: 'Connect Gmail', exact: true }).click();
   await expect(page.getByText('Finish connecting in your browser')).toBeVisible();
+  await expect(page.getByText(/Sign in to ApplyTrack in your browser, then choose your Gmail account/)).toBeVisible();
   expect(page.url()).toContain('/tests/fixtures/gmail.html');
-  expect(await page.evaluate(() => (window as any).oauthTargets)).toContain(googleUrl);
+  expect(await page.evaluate(() => (window as any).oauthTargets)).toContain(authorizationUrl);
   await expect(page.getByText('Gmail connected. Application updates will appear here.')).toHaveCount(0);
   state.inboxes = [inbox()]; await page.clock.fastForward(3100);
   await expect(page.getByText('Gmail connected. Application updates will appear here.')).toBeVisible();
@@ -70,7 +71,7 @@ test('asynchronous inbox checks poll until completion and disconnect removes the
 test('blocked popups remain recoverable and cancelling stops rapid connection polling', async ({ page }) => {
   const { calls } = await setup(page, [], true);
   await page.getByRole('button', { name: 'Connect Gmail', exact: true }).click();
-  await expect(page.getByRole('link', { name: 'Continue to Google' })).toHaveAttribute('href', googleUrl);
+  await expect(page.getByRole('link', { name: 'Continue in browser' })).toHaveAttribute('href', authorizationUrl);
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   const checks = calls.filter(call => call.path === '/api/inboxes').length;
   await page.clock.fastForward(10000);
@@ -98,11 +99,11 @@ test('a delayed connection response cannot reopen Google after the workspace cha
   await setup(page);
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
-  await page.route('**/api/inboxes/google/connect', async route => { await gate; await route.fulfill({ json: { url: googleUrl } }).catch(() => {}); });
+  await page.route('**/api/inboxes/google/connect', async route => { await gate; await route.fulfill({ json: { url: authorizationUrl } }).catch(() => {}); });
   await page.getByRole('button', { name: 'Connect Gmail', exact: true }).click();
   await page.getByRole('button', { name: 'Switch workspace' }).click();
   release(); await page.clock.fastForward(5000);
-  expect(await page.evaluate(() => (window as any).oauthTargets)).not.toContain(googleUrl);
+  expect(await page.evaluate(() => (window as any).oauthTargets)).not.toContain(authorizationUrl);
   await expect(page.getByText('Finish connecting in your browser')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Connect Gmail', exact: true })).toBeDisabled();
 });
@@ -113,7 +114,7 @@ test('desktop opens the hosted approval URL directly and pending controls fit a 
   await setup(page);
   await page.getByRole('button', { name: 'Connect Gmail', exact: true }).click();
   await expect(page.getByText('Finish connecting in your browser')).toBeVisible();
-  expect(await page.evaluate(() => (window as any).oauthTargets)).toEqual([googleUrl]);
+  expect(await page.evaluate(() => (window as any).oauthTargets)).toEqual([authorizationUrl]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('gmail-pending-mobile.png'), fullPage: true });
 });

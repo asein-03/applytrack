@@ -5,6 +5,7 @@ import type { CloudActor } from '../server/cloud.js';
 import { cloudFixture, post } from './cloud-fixtures.js';
 
 const cloud = { url: 'https://synthetic.supabase.co', publishableKey: 'sb_publishable_synthetic' };
+const authorizationUrl = `https://asein-03.github.io/applytrack/auth/?state=${'s'.repeat(43)}`;
 const inbox = { id: 'inbox-one', provider: 'gmail', email: 'applicant@example.invalid', status: 'connected', lastSyncAt: null, connectedAt: '2026-11-10T16:00:00Z', syncing: false };
 const actor = { id: 'alice', accessToken: 'alice-test-token' } as CloudActor;
 
@@ -27,7 +28,7 @@ test('upstream errors are sanitized and do not break ordinary workspace settings
   const status = await client.status(actor);
   assert.match(status.gmailStatusError!, /status is unavailable/); assert.equal(status.gmailConfigured, false);
   await assert.rejects(client.connect(actor), error => error instanceof Error && /not available/.test(error.message) && !error.message.includes('secret-token-value'));
-  for (const url of ['javascript:alert(1)', 'https://accounts.google.com.evil.test/o/oauth2/v2/auth', 'https://user' + '@accounts.google.com/o/oauth2/v2/auth', 'invalid']) {
+  for (const url of ['javascript:alert(1)', 'https://accounts.google.com.evil.test/o/oauth2/v2/auth', 'https://user' + '@accounts.google.com/o/oauth2/v2/auth', 'invalid', authorizationUrl.replace('/auth/', '/other/'), authorizationUrl + '&redirect=https://example.invalid', authorizationUrl + '#token', authorizationUrl.replace('asein-03.github.io', 'evil.example.invalid')]) {
     const unsafe = new CloudGmail(cloud, async () => Response.json({ url }));
     await assert.rejects(unsafe.connect(actor), /invalid connection link/);
   }
@@ -43,7 +44,7 @@ test('cloud Gmail routes use hosted OAuth without cookies and preserve per-accou
     calls.push({ token, ...body });
     if (unavailable) return Response.json({ error: 'upstream-private-detail' }, { status: 503 });
     if (body.inboxId && token !== 'Bearer alice') return Response.json({ error: 'not owned' }, { status: 404 });
-    if (body.action === 'connect') return Response.json({ url: 'https://accounts.google.com/o/oauth2/v2/auth?state=synthetic' });
+    if (body.action === 'connect') return Response.json({ url: authorizationUrl });
     if (body.action === 'sync') return Response.json({ syncing: true, token: 'must-not-leak' });
     if (body.action === 'disconnect') return Response.json({ disconnected: true });
     return Response.json({ gmailConfigured: true, inboxes: token === 'Bearer alice' ? [inbox] : [] });
@@ -55,7 +56,7 @@ test('cloud Gmail routes use hosted OAuth without cookies and preserve per-accou
     assert.equal((await f.api('/inboxes', {}, null)).status, 401);
     const connected = await f.api('/inboxes/google/connect', post({}));
     assert.equal(connected.status, 200); assert.equal(connected.headers.get('set-cookie'), null);
-    assert.match((await connected.json()).url, /^https:\/\/accounts\.google\.com\//);
+    assert.equal((await connected.json()).url, authorizationUrl);
     assert.equal((await f.api('/inboxes/google/callback?state=legacy&code=legacy')).status, 410);
     assert.deepEqual((await (await f.api('/inboxes', {}, 'bob')).json()).inboxes, []);
     assert.equal((await f.api('/inboxes/inbox-one/sync', post({}), 'bob')).status, 404);

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { ArrowClockwise, CaretDown, CaretRight, Check, Cloud, Copy, DownloadSimple, EnvelopeSimple, FileText, LinkSimple, Plus, SignOut, Trash, UserCircle, WarningCircle } from '@phosphor-icons/react';
 import type { Application, GmailStatus, GmailSyncResult, GmailDisconnectResult, Inbox, Settings, Workspace } from '../shared/types';
 import { api } from './api';
+import { safeGmailAuthorizationUrl } from '../shared/gmail';
 import { useCloudAccount } from './AuthGate';
 import { dateLabel, Modal } from './ui';
 import './connections.css';
@@ -128,12 +129,16 @@ export default function Connections({ settings, applications, workspace, onChang
     try {
       const result = await api<{ url: string }>('/inboxes/google/connect', { method: 'POST', body: JSON.stringify(inboxId ? { inboxId } : {}), signal });
       if (signal?.aborted) return;
-      const url = new URL(result.url);
-      if (url.protocol !== 'https:' || url.hostname !== 'accounts.google.com' || url.username || url.password || url.port) throw new Error('Google returned an invalid connection link. Try again.');
-      if (!isHosted) { window.location.assign(url.href); return; }
-      rememberPending({ startedAt: Date.now(), inboxId, previous: new Map(inboxes.map(inbox => [inbox.id, inbox])), url: url.href });
-      if (window.applyDesktop) window.open(url.href, '_blank', 'noopener,noreferrer');
-      else if (authWindow && !authWindow.closed) authWindow.location.href = url.href;
+      if (!isHosted) {
+        const url = new URL(result.url);
+        if (url.protocol !== 'https:' || url.hostname !== 'accounts.google.com' || url.username || url.password || url.port || !['/o/oauth2/v2/auth', '/o/oauth2/auth'].includes(url.pathname)) throw new Error('Gmail returned an invalid connection link. Try again.');
+        window.location.assign(url.href); return;
+      }
+      const destination = safeGmailAuthorizationUrl(result.url);
+      if (!destination) throw new Error('Gmail returned an invalid connection link. Try again.');
+      rememberPending({ startedAt: Date.now(), inboxId, previous: new Map(inboxes.map(inbox => [inbox.id, inbox])), url: destination });
+      if (window.applyDesktop) window.open(destination, '_blank', 'noopener,noreferrer');
+      else if (authWindow && !authWindow.closed) authWindow.location.href = destination;
     } catch (error) { if (!signal?.aborted) setActionError(error instanceof Error ? error.message : 'Could not connect Gmail.'); if (authWindow && !authWindow.closed) authWindow.close(); if (popup.current === authWindow) popup.current = null; }
     finally { if (!signal?.aborted) setBusy(''); }
   }
@@ -202,7 +207,7 @@ export default function Connections({ settings, applications, workspace, onChang
           <div className="cn-row-actions">{inbox.status === 'reconnect_required' ? <button className="button secondary small" onClick={() => void connect(inbox.id)} disabled={!!busy || !!pending || workspace !== 'personal'} aria-label={`Reconnect ${inbox.email}`}>Reconnect</button> : <button className="button secondary small" onClick={() => void inboxAction(inbox.id, 'sync')} disabled={!!busy || !!inbox.syncing || syncingId === inbox.id || workspace !== 'personal'} aria-label={`Sync ${inbox.email}`}><ArrowClockwise size={15} />{busy === `sync:${inbox.id}` || inbox.syncing || syncingId === inbox.id ? 'Checking…' : 'Sync'}</button>}<button className="cn-disconnect icon-button" aria-label={`Disconnect ${inbox.email}`} title="Disconnect account" onClick={() => void inboxAction(inbox.id, 'disconnect')} disabled={!!busy || workspace !== 'personal'}><Trash size={17} /></button></div>
         </div>) : <div className="cn-inbox-row cn-empty-inbox"><span className="cn-provider" aria-hidden="true"><EnvelopeSimple size={21} /></span><div className="cn-inbox-copy"><strong>No inbox connected</strong><span>Connect Gmail or import an email to add updates.</span></div><span className="cn-health cn-health-neutral">Not connected</span></div>}
         <div className="cn-group-actions"><button className="button primary" onClick={() => void connect()} disabled={!!busy || !!pending || !connection?.gmailConfigured || workspace !== 'personal'}><Plus size={17} />{busy === 'connect' ? 'Connecting…' : 'Connect Gmail'}</button><button className="button secondary" onClick={() => { setImportError(''); setImportOpen(true); }} disabled={!!busy}><FileText size={17} />Import email</button><span className="cn-actions-note">Read-only Gmail access</span></div>
-        {pending && <div className="cn-pending" role="status"><div><strong>Finish connecting in your browser</strong><p>Approve read-only Gmail access, then return here. This page will update automatically.</p></div><div className="cn-pending-actions"><a className="button secondary small" href={pending.url} target="_blank" rel="noopener noreferrer">Continue to Google</a><button className="text-button" onClick={cancelConnection}>Cancel</button></div></div>}
+        {pending && <div className="cn-pending" role="status"><div><strong>Finish connecting in your browser</strong><p>Sign in to ApplyTrack in your browser, then choose your Gmail account. This page will update automatically.</p></div><div className="cn-pending-actions"><a className="button secondary small" href={pending.url} target="_blank" rel="noopener noreferrer">Continue in browser</a><button className="text-button" onClick={cancelConnection}>Cancel</button></div></div>}
         {connectionMessage && <div className="cn-connection-message" role="status"><Check size={17} /><p>{connectionMessage}</p></div>}
         {statusError && <div className="cn-inline-error" role="alert"><WarningCircle size={17} /><p>{statusError}</p><button className="text-button" onClick={() => void loadGmailStatus()}>Check again</button></div>}
         {workspace === 'demo' && <p className="cn-personal-note">Switch to your personal workspace to connect or manage Gmail.</p>}
