@@ -15,6 +15,8 @@ jobs:
           deno-version: v2.9.6
       - run: deno check --config supabase/functions/gmail/deno.json --frozen supabase/functions/gmail/index.ts
       - run: deno test --config supabase/functions/gmail/deno.json --frozen tests/gmail-sync.test.ts
+      - run: deno check --config supabase/functions/account/deno.json --frozen supabase/functions/account/index.ts
+      - run: deno test --config supabase/functions/account/deno.json --frozen tests/account-deletion.test.ts
   test:
     runs-on: ubuntu-latest
     steps:

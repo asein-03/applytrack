@@ -4,3 +4,8 @@ project_id = "applytrack"
 verify_jwt = false
 entrypoint = "./functions/gmail/index.ts"
 import_map = "./functions/gmail/deno.json"
+
+[functions.account]
+verify_jwt = false
+entrypoint = "./functions/account/index.ts"
+import_map = "./functions/account/deno.json"
